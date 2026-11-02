@@ -1,0 +1,36 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{3F021D9E-806B-45F7-A952-5DEDB6D07F7B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ClaudeIpGuard", "src\ClaudeIpGuard\ClaudeIpGuard.csproj", "{D7022F4F-0762-4ABA-87CC-37811A07006B}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{1D4D5856-31E3-4F42-9971-1E09E848E782}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ClaudeIpGuard.SelfTest", "tests\ClaudeIpGuard.SelfTest\ClaudeIpGuard.SelfTest.csproj", "{D773D513-916E-4792-891E-7418D6B6AC73}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{D7022F4F-0762-4ABA-87CC-37811A07006B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D7022F4F-0762-4ABA-87CC-37811A07006B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D7022F4F-0762-4ABA-87CC-37811A07006B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D7022F4F-0762-4ABA-87CC-37811A07006B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D773D513-916E-4792-891E-7418D6B6AC73}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D773D513-916E-4792-891E-7418D6B6AC73}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D773D513-916E-4792-891E-7418D6B6AC73}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D773D513-916E-4792-891E-7418D6B6AC73}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{D7022F4F-0762-4ABA-87CC-37811A07006B} = {3F021D9E-806B-45F7-A952-5DEDB6D07F7B}
+		{D773D513-916E-4792-891E-7418D6B6AC73} = {1D4D5856-31E3-4F42-9971-1E09E848E782}
+	EndGlobalSection
+EndGlobal
