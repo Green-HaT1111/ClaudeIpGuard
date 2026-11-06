@@ -40,6 +40,7 @@ public sealed class GeoIpService : IIpLocator, IDisposable
     readonly object _lock = new();
     readonly Dictionary<string, (GeoResult Result, DateTime At)> _cache = new();
     readonly (string Name, Func<string, CancellationToken, Task<GeoResult?>> Lookup)[] _providers;
+    readonly bool _requireVpnProtection;
 
     public GeoIpService(bool requireVpnProtection = true)
     {
