@@ -67,9 +67,52 @@ per-application precise-location permission switch. Disabling Windows Location S
 device/user-wide action and can affect other applications. The audit reports this limitation rather
 than silently changing a global setting.
 
-The full-system firewall kill switch is a separate next implementation step. It must be configured
-with the exact VPN client executable, server IP/port/protocol, and tunnel interface; allowing all
-traffic from an unknown VPN executable would defeat the purpose of the kill switch.
+## Full-system firewall kill switch (administrator tool)
+
+A separate PowerShell tool is provided at `tools/KillSwitch.ps1`. It is deliberately not enabled
+automatically by the WPF app. It changes the Windows Defender Firewall outbound policy for the
+whole computer and must be reviewed before use.
+
+The tool:
+- Requires an elevated PowerShell session.
+- Takes a backup of the three firewall profiles and the names of enabled outbound allow rules.
+- Refuses Group Policy-managed profiles or unsupported non-local outbound allow rules.
+- Sets outbound defaults to Block, disables existing outbound Allow rules, then creates only three
+  exceptions: the literal VPN server endpoint, the selected VPN tunnel interface, and DHCP renewal
+  to the local subnet on the physical interface.
+- Verifies the effective profile settings and exceptions; if verification fails, it attempts rollback.
+- Provides a Disable action that removes its rules, restores saved profile values, and re-enables
+  the previously enabled outbound Allow rules.
+
+**Important:** A successful plan/build does not prove the firewall will behave as expected on every
+Windows installation. The PowerShell tool has not yet been exercised on your PC. Review its Plan
+output first. Do not enable it if Plan reports a policy source or rule that it cannot manage. Keep
+the Disable command available before enabling it. While active, ordinary Internet access is blocked
+system-wide unless it passes through the selected VPN tunnel interface or the one configured server
+endpoint. DHCP is restricted to the local subnet.
+
+Example (replace all placeholders with values confirmed on the target PC):
+
+```powershell
+# Read-only preflight. Run PowerShell as Administrator.
+.\tools\KillSwitch.ps1 -Action Plan -ServerAddress "<VPN_SERVER_IP>" -ServerPort 443 -Protocol TCP -TunnelInterfaceAlias "<TAP_INTERFACE>" -PhysicalInterfaceAlias "<PHYSICAL_INTERFACE>"
+
+# Apply only after reviewing a successful Plan result.
+.\tools\KillSwitch.ps1 -Action Enable -ServerAddress "<VPN_SERVER_IP>" -ServerPort 443 -Protocol TCP -TunnelInterfaceAlias "<TAP_INTERFACE>" -PhysicalInterfaceAlias "<PHYSICAL_INTERFACE>"
+
+# Restore the prior firewall profile and enabled outbound rules.
+.\tools\KillSwitch.ps1 -Action Disable
+```
+
+Your OpenVPN connection log showed TCP on port 443 for its recorded sessions. OpenVPN Connect's
+Adaptive mode can choose a protocol from the profile's remote entries, so forcing TCP in OpenVPN
+Connect is recommended when using a TCP-only firewall exception. If the provider changes the
+server IP, port, or protocol, the firewall configuration must be updated before reconnecting.
+
+OpenVPN Connect also has its own **Seamless Tunnel** setting, which blocks Internet access while a
+VPN connection is paused or reconnecting. Enable that separately in OpenVPN Connect as a second
+layer; it does not replace this system-wide firewall policy.
+
 
 ## Password
 
