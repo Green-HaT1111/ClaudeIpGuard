@@ -47,7 +47,7 @@ public sealed class TrayIcon : IDisposable
 
     public void ShowNotification(string title, string message)
     {
-        _dispatcher.BeginInvoke(() =>
+        _dispatcher.BeginInvoke(new Action(() =>
         {
             try
             {
@@ -57,7 +57,7 @@ public sealed class TrayIcon : IDisposable
                 _icon.ShowBalloonTip(6000);
             }
             catch (Exception ex) { CrashLog.Write("Could not show privacy notification", ex); }
-        });
+        }));
     }
 
     void BuildMenu()
