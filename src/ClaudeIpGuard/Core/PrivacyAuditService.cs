@@ -19,6 +19,7 @@ public sealed class PrivacyAuditReport
 {
     public string OsCaption { get; set; } = "";
     public bool KillSwitchActive { get; set; }
+    public bool HasFirewallBackup { get; set; }
     public bool CanEnableKillSwitch { get; set; }
     public List<string> VpnAdapters { get; set; } = [];
     public List<string> OpenVpnConfigs { get; set; } = [];
