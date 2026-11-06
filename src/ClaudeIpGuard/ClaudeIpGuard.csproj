@@ -11,10 +11,10 @@
     <RootNamespace>ClaudeIpGuard</RootNamespace>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <Product>Claude IP Guard</Product>
     <Company>Claude IP Guard</Company>
-    <Description>Closes Claude when your public IP is outside the allowed countries.</Description>
+    <Description>Claude privacy audit and VPN-only network protection for Windows.</Description>
   </PropertyGroup>
 
   <!-- WPF and WinForms share type names (Application, MessageBox...). Keep WinForms out of the global usings. -->
