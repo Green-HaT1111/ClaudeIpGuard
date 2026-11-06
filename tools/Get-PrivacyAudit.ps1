@@ -86,6 +86,7 @@ try {
  $killSwitchActive=$blocked -and $hasTunnel -and $hasEndpoint -and $hasDhcp -and $residual.Count -eq 0
 } catch {}
 
+$firewallBackupExists=Test-Path (Join-Path $env:ProgramData 'ClaudeIpGuard\firewall-backup.json')
 $canEnableKillSwitch=$false
 if (-not $killSwitchActive -and $vpnAdapters.Count -eq 1 -and $profileFiles.Count -gt 0) {
  $selectedAdapter=Get-NetAdapter -Name $vpnAdapters[0] -ErrorAction SilentlyContinue
@@ -117,4 +118,4 @@ if ($cacheFolders.Count -gt 0) {
  Add-Finding 'claude-cache-present' 'Info' 'Temporary Claude cache folders found' 'پوشه‌های کش موقت Claude پیدا شدند' "$($cacheFolders.Count) cache folder(s) can be backed up and cleared. Cookies, sessions, tokens and account databases are excluded." "$($cacheFolders.Count) پوشه کش را می‌توان پشتیبان‌گیری و پاک‌سازی کرد. کوکی‌ها، نشست‌ها، توکن‌ها و پایگاه داده حساب حذف نمی‌شوند." 'Apply safe fixes while Claude is closed. Cache cleanup cannot delete historical server-side data.' 'هنگام بسته‌بودن Claude اصلاحات امن را اجرا کن. پاک‌سازی کش داده‌های قبلی سمت سرور را حذف نمی‌کند.'
 }
 
-[pscustomobject]@{ OsCaption=$osCaption; KillSwitchActive=$killSwitchActive; CanEnableKillSwitch=$canEnableKillSwitch; VpnAdapters=@($vpnAdapters); OpenVpnConfigs=@($openVpnConfigs); Findings=@($findings) } | ConvertTo-Json -Depth 7 -Compress
+[pscustomobject]@{ OsCaption=$osCaption; KillSwitchActive=$killSwitchActive; HasFirewallBackup=$firewallBackupExists; CanEnableKillSwitch=$canEnableKillSwitch; VpnAdapters=@($vpnAdapters); OpenVpnConfigs=@($openVpnConfigs); Findings=@($findings) } | ConvertTo-Json -Depth 7 -Compress
