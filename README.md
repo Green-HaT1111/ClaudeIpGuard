@@ -111,7 +111,16 @@ server IP, port, or protocol, the firewall configuration must be updated before 
 
 OpenVPN Connect also has its own **Seamless Tunnel** setting, which blocks Internet access while a
 VPN connection is paused or reconnecting. Enable that separately in OpenVPN Connect as a second
-layer; it does not replace this system-wide firewall policy.
+layer; it does not replace this system-wide firewall policy. OpenVPN Connect documents these
+settings through its command-line interface. From PowerShell, the following commands enable Seamless
+Tunnel and pin the transport to TCP:
+
+```powershell
+& "$env:ProgramFiles\OpenVPN Connect\OpenVPNConnect.exe" --set-setting=seamless-tunnel --value=true
+& "$env:ProgramFiles\OpenVPN Connect\OpenVPNConnect.exe" --set-setting=vpn-protocol --value=tcp
+```
+
+After running them, verify both values in OpenVPN Connect Settings before using the firewall tool.
 
 
 ## Password
