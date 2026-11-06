@@ -1,4 +1,5 @@
 using System.Net.NetworkInformation;
+using ClaudeIpGuard.Localization;
 
 namespace ClaudeIpGuard.Core;
 
@@ -23,6 +24,8 @@ public sealed class GuardEngine : IDisposable
     readonly CancellationTokenSource _cts = new();
     readonly SemaphoreSlim _wake = new(0, 1);
     readonly object _enforceLock = new();
+    readonly VpnNetworkInspector _vpnInspector = new();
+    string? _lastVpnAuditFingerprint;
     readonly Timer _networkDebounce;
     DateTime _lastNetworkLog = DateTime.MinValue;
     volatile bool _paused;
@@ -40,7 +43,7 @@ public sealed class GuardEngine : IDisposable
         _settings = settings;
         _locator = locator;
         _guard = guard;
-        _networkDebounce = new Timer(_ => CheckNow());
+        _networkDebounce = new Timer(_ => { AuditNetwork(); CheckNow(); });
     }
 
     public GeoResult? LastResult { get; private set; }
@@ -67,6 +70,7 @@ public sealed class GuardEngine : IDisposable
         if (_started) return;
         _started = true;
         Log(ActivityLevel.Info, "Act_Started");
+        _ = Task.Run(AuditNetwork);
         NetworkChange.NetworkAddressChanged += OnNetworkChanged;
         NetworkChange.NetworkAvailabilityChanged += OnNetworkChanged;
         _ = Task.Run(CheckLoopAsync);
@@ -152,8 +156,83 @@ public sealed class GuardEngine : IDisposable
         }
     }
 
+    void AuditNetwork()
+    {
+        try
+        {
+            var snapshot = _vpnInspector.Inspect();
+            if (string.Equals(snapshot.Fingerprint, _lastVpnAuditFingerprint, StringComparison.Ordinal))
+                return;
+
+            _lastVpnAuditFingerprint = snapshot.Fingerprint;
+            var l = Loc.Instance;
+            var notes = new List<string>();
+            var risks = false;
+
+            if (snapshot.HasActiveVpnAdapter)
+                notes.Add(l.Format("Audit_VpnAdapterFound",
+                    string.Join(", ", snapshot.ActiveVpnAdapters.Select(a => a.Name))));
+            else
+            {
+                notes.Add(l["Audit_VpnAdapterMissing"]);
+                risks = true;
+            }
+
+            if (snapshot.OpenVpnProcesses.Count > 0)
+                notes.Add(l.Format("Audit_OpenVpnRunning", snapshot.OpenVpnProcesses.Count));
+            else
+            {
+                notes.Add(l["Audit_OpenVpnNotRunning"]);
+                risks = true;
+            }
+
+            if (snapshot.HasNonVpnIpv6DefaultGateway)
+            {
+                notes.Add(l["Audit_Ipv6BypassRisk"]);
+                risks = true;
+            }
+
+            if (snapshot.HasDnsOnNonVpnAdapter)
+            {
+                notes.Add(l["Audit_DnsOutsideVpnRisk"]);
+                risks = true;
+            }
+
+            notes.Add(snapshot.Location.ServiceState.Equals("Running", StringComparison.OrdinalIgnoreCase)
+                ? l["Audit_LocationRunning"]
+                : l["Audit_LocationServiceStopped"]);
+
+            var consent = snapshot.Location.UserConsent.ToLowerInvariant() switch
+            {
+                "allow" => l["Audit_ConsentAllow"],
+                "deny" => l["Audit_ConsentDeny"],
+                _ => l["Audit_ConsentUnknown"],
+            };
+            notes.Add(l.Format("Audit_LocationConsent", consent));
+
+            if (snapshot.Location.DevicePolicyDisablesLocation)
+                notes.Add(l["Audit_LocationPolicyDisabled"]);
+
+            notes.Add(l["Audit_DesktopAppLimit"]);
+
+            if (!string.IsNullOrWhiteSpace(snapshot.Error))
+            {
+                notes.Add(snapshot.Error!);
+                risks = true;
+            }
+
+            Log(risks ? ActivityLevel.Warning : ActivityLevel.Info,
+                "Act_NetworkAudit", string.Join("; ", notes));
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write("Network privacy audit failed", ex);
+        }
+    }
+
     async Task RunCheckAsync(CancellationToken ct)
     {
+        AuditNetwork();
         AuditNetwork();
         _checking = true;
         RaiseStateChanged();
