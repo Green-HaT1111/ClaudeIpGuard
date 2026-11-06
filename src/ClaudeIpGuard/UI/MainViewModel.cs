@@ -63,6 +63,7 @@ public sealed class MainViewModel : ObservableObject
         IsTestMode = testMode;
         Editor = new SettingsEditor();
         Editor.LoadFrom(host.Settings);
+        BrowserData = new BrowserDataViewModel(engine, testMode);
 
         engine.StateChanged += () => Ui(Refresh);
         engine.Activity += e => Ui(() => AddActivity(e));
@@ -71,6 +72,8 @@ public sealed class MainViewModel : ObservableObject
             Refresh();
             foreach (var item in Activity) item.Refresh();
             Editor.RefreshTexts();
+            Privacy.RefreshTexts();
+            BrowserData.RefreshTexts();
         };
 
         var timer = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, (_, _) => UpdateNextCheck(), _dispatcher);
@@ -80,6 +83,8 @@ public sealed class MainViewModel : ObservableObject
 
     public GuardEngine Engine { get; }
     public SettingsEditor Editor { get; }
+    public PrivacyViewModel Privacy { get; } = new();
+    public BrowserDataViewModel BrowserData { get; }
     public ObservableCollection<ActivityItem> Activity { get; } = new();
     public bool IsTestMode { get; }
     public Visibility TestBannerVisibility => IsTestMode ? Visibility.Visible : Visibility.Collapsed;

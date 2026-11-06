@@ -5,7 +5,8 @@ using System.Text.Json;
 
 namespace ClaudeIpGuard.Core;
 
-public sealed record GeoResult(string Ip, string CountryCode, string CountryName, string? City, string Provider);
+/// <param name="TimeZone">IANA time zone of the IP's location (e.g. "Europe/London"), if the service gave one.</param>
+public sealed record GeoResult(string Ip, string CountryCode, string CountryName, string? City, string Provider, string? TimeZone = null);
 
 public interface IIpLocator
 {
@@ -142,7 +143,8 @@ public sealed class GeoIpService : IIpLocator, IDisposable
     {
         var j = await GetJsonAsync($"https://ipwho.is/{ip}", ct);
         if (j.TryGetProperty("success", out var ok) && ok.ValueKind == JsonValueKind.False) return null;
-        return Make(ip, Str(j, "country_code"), Str(j, "country"), Str(j, "city"), "ipwho.is");
+        var tz = j.TryGetProperty("timezone", out var t) ? Str(t, "id") : null;
+        return Make(ip, Str(j, "country_code"), Str(j, "country"), Str(j, "city"), "ipwho.is", tz);
     }
 
     async Task<GeoResult?> CountryIsAsync(string ip, CancellationToken ct)
@@ -154,14 +156,18 @@ public sealed class GeoIpService : IIpLocator, IDisposable
     async Task<GeoResult?> FreeIpApiAsync(string ip, CancellationToken ct)
     {
         var j = await GetJsonAsync($"https://freeipapi.com/api/json/{ip}", ct);
-        return Make(ip, Str(j, "countryCode"), Str(j, "countryName"), Str(j, "cityName"), "freeipapi.com");
+        string? tz = null;
+        if (j.TryGetProperty("timeZones", out var zones) && zones.ValueKind == JsonValueKind.Array && zones.GetArrayLength() > 0 &&
+            zones[0].ValueKind == JsonValueKind.String)
+            tz = zones[0].GetString();
+        return Make(ip, Str(j, "countryCode"), Str(j, "countryName"), Str(j, "cityName"), "freeipapi.com", tz);
     }
 
     async Task<GeoResult?> IpApiCoAsync(string ip, CancellationToken ct)
     {
         var j = await GetJsonAsync($"https://ipapi.co/{ip}/json/", ct);
         if (j.TryGetProperty("error", out var err) && err.ValueKind == JsonValueKind.True) return null;
-        return Make(ip, Str(j, "country_code"), Str(j, "country_name"), Str(j, "city"), "ipapi.co");
+        return Make(ip, Str(j, "country_code"), Str(j, "country_name"), Str(j, "city"), "ipapi.co", Str(j, "timezone"));
     }
 
     static string? Str(JsonElement j, string name) =>
@@ -169,12 +175,13 @@ public sealed class GeoIpService : IIpLocator, IDisposable
             ? v.GetString()
             : null;
 
-    static GeoResult? Make(string ip, string? code, string? name, string? city, string provider)
+    static GeoResult? Make(string ip, string? code, string? name, string? city, string provider, string? timeZone = null)
     {
         code = code?.Trim().ToUpperInvariant();
         if (code is not { Length: 2 } || !code.All(char.IsAsciiLetterUpper)) return null;
         if (string.IsNullOrWhiteSpace(name)) name = CountryNames.Get(code);
-        return new GeoResult(ip, code, name!, string.IsNullOrWhiteSpace(city) ? null : city, provider);
+        return new GeoResult(ip, code, name!, string.IsNullOrWhiteSpace(city) ? null : city, provider,
+            string.IsNullOrWhiteSpace(timeZone) ? null : timeZone.Trim());
     }
 
     public void Dispose() => _http.Dispose();
@@ -197,6 +204,13 @@ public sealed class SimulatedLocator : IIpLocator
         if (Fail || string.IsNullOrEmpty(Country))
             throw new GeoLookupException("Simulated lookup failure");
         var code = Country.ToUpperInvariant();
-        return Task.FromResult(new GeoResult("203.0.113.10", code, CountryNames.Get(code), "Test City", "simulated"));
+        return Task.FromResult(new GeoResult("203.0.113.10", code, CountryNames.Get(code), "Test City", "simulated",
+            TestZones.GetValueOrDefault(code)));
     }
+
+    static readonly Dictionary<string, string> TestZones = new()
+    {
+        ["GB"] = "Europe/London", ["FR"] = "Europe/Paris", ["DE"] = "Europe/Berlin",
+        ["US"] = "America/New_York", ["CA"] = "America/Toronto", ["IR"] = "Asia/Tehran",
+    };
 }

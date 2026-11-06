@@ -1,6 +1,6 @@
-; Inno Setup script for Claude IP Guard. Build with build.ps1 (it publishes the app first).
+﻿; Inno Setup script for Claude IP Guard. Build with build.ps1 (it publishes the app first).
 #define AppName "Claude IP Guard"
-#define AppVersion "1.0.0"
+#define AppVersion "1.1.0"
 #define AppExe "ClaudeIpGuard.exe"
 
 [Setup]
@@ -36,10 +36,18 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "..\publish\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "service-permission.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Run]
+; Let normal users stop Claude's background service (CoworkVMService), so the guard can close it
+; without admin rights. Does nothing if users can already stop it or the service isn't installed.
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\service-permission.ps1"" -Action Grant"; StatusMsg: "Setting up permission to stop Claude's background service..."; Flags: runhidden waituntilterminated
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+; Remove only the permission that setup added.
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\service-permission.ps1"" -Action Revoke"; RunOnceId: "RevokeServicePermission"; Flags: runhidden waituntilterminated

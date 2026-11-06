@@ -22,7 +22,7 @@
                     <Image Source="pack://application:,,,/ClaudeIpGuard;component/Assets/app.ico" Width="36" Height="36"/>
                     <StackPanel Margin="12,0,0,0" VerticalAlignment="Center">
                         <TextBlock Text="Claude IP Guard" Foreground="White" FontSize="16" FontWeight="SemiBold"/>
-                        <TextBlock Text="v1.0" Foreground="#94A3B8" FontSize="11"/>
+                        <TextBlock Text="v1.1" Foreground="#94A3B8" FontSize="11"/>
                     </StackPanel>
                 </StackPanel>
 
@@ -53,6 +53,18 @@
                             <TextBlock Text="{loc:T Nav_Activity}"/>
                         </StackPanel>
                     </RadioButton>
+                    <RadioButton x:Name="NavPrivacy" x:FieldModifier="public" Style="{StaticResource NavButton}" Tag="privacy" Checked="Nav_Checked">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8D7;" Width="28" VerticalAlignment="Center"/>
+                            <TextBlock Text="{loc:T Nav_Privacy}"/>
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="NavBrowser" x:FieldModifier="public" Style="{StaticResource NavButton}" Tag="browser" Checked="Nav_Checked">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE774;" Width="28" VerticalAlignment="Center"/>
+                            <TextBlock Text="{loc:T Nav_BrowserData}"/>
+                        </StackPanel>
+                    </RadioButton>
                     <RadioButton x:Name="NavSettings" x:FieldModifier="public" Style="{StaticResource NavButton}" Tag="settings" Checked="Nav_Checked">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE713;" Width="28" VerticalAlignment="Center"/>
@@ -77,6 +89,21 @@
                     <StackPanel>
                         <TextBlock Text="{loc:T Dash_Title}" Style="{StaticResource H1}"/>
                         <TextBlock Text="{loc:T Dash_Subtitle}" Style="{StaticResource Sub}" Margin="0,4,0,20"/>
+
+                        <!-- Notification: browser data that can show the location -->
+                        <Border Background="{StaticResource WarningBgBrush}" CornerRadius="12" Padding="18,14" Margin="0,0,0,16"
+                                Visibility="{Binding BrowserData.BannerVisibility}">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                                    <Button Style="{StaticResource PrimaryButton}" Content="{loc:T Btn_Review}" Click="ReviewBrowserData_Click"/>
+                                    <Button Style="{StaticResource SecondaryButton}" Content="{loc:T Btn_Dismiss}" Click="DismissBrowserBanner_Click" Margin="8,0,0,0"/>
+                                </StackPanel>
+                                <TextBlock DockPanel.Dock="Left" FontFamily="Segoe MDL2 Assets" Text="&#xE7BA;" FontSize="20"
+                                           Foreground="{StaticResource WarningTextBrush}" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                                <TextBlock Text="{Binding BrowserData.BannerText}" Foreground="{StaticResource WarningTextBrush}"
+                                           FontWeight="SemiBold" TextWrapping="Wrap" VerticalAlignment="Center"/>
+                            </DockPanel>
+                        </Border>
 
                         <Border CornerRadius="14" Padding="26" Background="{Binding StatusBrush}">
                             <Grid>
@@ -210,6 +237,194 @@
                     </Border>
                 </Grid>
 
+                <!-- Leak check page -->
+                <Grid x:Name="PagePrivacy" x:FieldModifier="public" Visibility="Collapsed" DataContext="{Binding Privacy}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <DockPanel Margin="0,0,0,16">
+                        <Button DockPanel.Dock="Right" Style="{StaticResource PrimaryButton}" Click="RunLeakCheck_Click"
+                                IsEnabled="{Binding CanRun}" VerticalAlignment="Center">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE72C;" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                <TextBlock Text="{loc:T Btn_RunCheck}"/>
+                            </StackPanel>
+                        </Button>
+                        <StackPanel Margin="0,0,16,0">
+                            <TextBlock Text="{loc:T Privacy_Title}" Style="{StaticResource H1}"/>
+                            <TextBlock Text="{loc:T Privacy_Subtitle}" Style="{StaticResource Sub}" Margin="0,4,0,0"/>
+                        </StackPanel>
+                    </DockPanel>
+
+                    <Border Grid.Row="1" Style="{StaticResource Card}" Padding="16,12" Margin="0,0,0,14">
+                        <DockPanel>
+                            <TextBlock DockPanel.Dock="Right" Text="{Binding LastRunText}" Foreground="{StaticResource MutedBrush}"
+                                       FontSize="12" VerticalAlignment="Center"/>
+                            <ProgressBar DockPanel.Dock="Right" IsIndeterminate="True" Width="80" Height="4" Margin="12,0"
+                                         Visibility="{Binding ProgressVisibility}" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding Summary}" FontWeight="SemiBold" FontSize="14"
+                                       Foreground="{StaticResource TextBrush}" VerticalAlignment="Center"/>
+                        </DockPanel>
+                    </Border>
+
+                    <!-- VPN kill switch -->
+                    <Border Grid.Row="2" Style="{StaticResource Card}" Padding="16,12" Margin="0,0,0,14">
+                        <DockPanel>
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                                <Button Style="{StaticResource PrimaryButton}" Click="KillSwitchOn_Click" IsEnabled="{Binding CanToggleKill}"
+                                        Visibility="{Binding KillOnVisibility}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE72E;" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                        <TextBlock Text="{Binding KillOnButtonText}"/>
+                                    </StackPanel>
+                                </Button>
+                                <Button Style="{StaticResource SecondaryButton}" Content="{loc:T Btn_KillOff}" Click="KillSwitchOff_Click"
+                                        IsEnabled="{Binding CanToggleKill}" Visibility="{Binding KillOffVisibility}" Margin="8,0,0,0"/>
+                            </StackPanel>
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="{loc:T Kill_Title}" FontWeight="SemiBold" FontSize="14" Foreground="{StaticResource TextBrush}"/>
+                                    <TextBlock Text="{Binding KillStatus}" Foreground="{Binding KillStatusBrush}" FontWeight="SemiBold"
+                                               FontSize="12" Margin="10,1,0,0" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <TextBlock Text="{Binding KillSwitchText}" Foreground="#334155" FontSize="13" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                <TextBlock Text="{Binding KillResult}" Foreground="{Binding KillResultBrush}" Visibility="{Binding KillResultVisibility}"
+                                           FontWeight="SemiBold" FontSize="12.5" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                            </StackPanel>
+                        </DockPanel>
+                    </Border>
+
+                    <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto">
+                        <ItemsControl ItemsSource="{Binding Items}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Style="{StaticResource Card}" Padding="16,14" Margin="0,0,0,10">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition/>
+                                            </Grid.ColumnDefinitions>
+                                            <Border Width="34" Height="34" CornerRadius="17" Background="{Binding StatusBrush}" VerticalAlignment="Top">
+                                                <TextBlock Text="{Binding Glyph}" FontFamily="Segoe MDL2 Assets" FontSize="15" Foreground="White"
+                                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                            </Border>
+                                            <StackPanel Grid.Column="1" Margin="14,0,0,0">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock Text="{Binding Title}" FontWeight="SemiBold" FontSize="14" Foreground="{StaticResource TextBrush}"/>
+                                                    <TextBlock Text="{Binding StatusText}" Foreground="{Binding StatusBrush}" FontWeight="SemiBold"
+                                                               FontSize="12" Margin="10,1,0,0" VerticalAlignment="Center"/>
+                                                </StackPanel>
+                                                <TextBlock Text="{Binding Detail}" Foreground="#334155" FontSize="13" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Grid>
+
+                <!-- Browser data page -->
+                <Grid x:Name="PageBrowser" x:FieldModifier="public" Visibility="Collapsed" DataContext="{Binding BrowserData}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <DockPanel Margin="0,0,0,16">
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                            <Button Style="{StaticResource SecondaryButton}" Click="ScanBrowsers_Click" IsEnabled="{Binding CanAct}">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE72C;" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                    <TextBlock Text="{loc:T Btn_ScanAgain}"/>
+                                </StackPanel>
+                            </Button>
+                            <Button Style="{StaticResource PrimaryButton}" Click="CleanBrowsers_Click" IsEnabled="{Binding CanClean}" Margin="8,0,0,0">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE74D;" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                    <TextBlock Text="{loc:T Btn_CleanSelected}"/>
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
+                        <StackPanel Margin="0,0,16,0">
+                            <TextBlock Text="{loc:T BD_Title}" Style="{StaticResource H1}"/>
+                            <TextBlock Text="{loc:T BD_Subtitle}" Style="{StaticResource Sub}" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </DockPanel>
+
+                    <Border Grid.Row="1" Style="{StaticResource Card}" Padding="16,12" Margin="0,0,0,14">
+                        <StackPanel>
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Right" Text="{Binding LastScanText}" Foreground="{StaticResource MutedBrush}"
+                                           FontSize="12" VerticalAlignment="Center"/>
+                                <ProgressBar DockPanel.Dock="Right" IsIndeterminate="True" Width="80" Height="4" Margin="12,0"
+                                             Visibility="{Binding ProgressVisibility}" VerticalAlignment="Center"/>
+                                <TextBlock Text="{Binding Summary}" FontWeight="SemiBold" FontSize="14" TextWrapping="Wrap"
+                                           Foreground="{StaticResource TextBrush}" VerticalAlignment="Center"/>
+                            </DockPanel>
+                            <TextBlock Text="{Binding ResultText}" Foreground="{Binding ResultBrush}" Visibility="{Binding ResultVisibility}"
+                                       FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                            <TextBlock Text="{loc:T BD_Hint}" Style="{StaticResource Sub}" FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                        </StackPanel>
+                    </Border>
+
+                    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <TextBlock Text="{loc:T BD_NoBrowsers}" Visibility="{Binding EmptyVisibility}" Foreground="{StaticResource MutedBrush}"
+                                       HorizontalAlignment="Center" Margin="0,30,0,0"/>
+                            <ItemsControl ItemsSource="{Binding Groups}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Style="{StaticResource Card}" Padding="18,14" Margin="0,0,0,12">
+                                            <StackPanel>
+                                                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                                    <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE774;" FontSize="16" VerticalAlignment="Center"
+                                                               Foreground="{StaticResource PrimaryBrush}" Margin="0,0,10,0"/>
+                                                    <TextBlock Text="{Binding Name}" Style="{StaticResource SectionTitle}" Margin="0"/>
+                                                    <TextBlock Text="{Binding StatusText}" Foreground="{StaticResource MutedBrush}" FontSize="12"
+                                                               VerticalAlignment="Center" Margin="12,2,0,0"/>
+                                                </StackPanel>
+                                                <ItemsControl ItemsSource="{Binding Rows}">
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <Border BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="0,10,0,8">
+                                                                <Grid>
+                                                                    <Grid.ColumnDefinitions>
+                                                                        <ColumnDefinition Width="Auto"/>
+                                                                        <ColumnDefinition/>
+                                                                    </Grid.ColumnDefinitions>
+                                                                    <CheckBox IsChecked="{Binding IsSelected}" VerticalAlignment="Top" Margin="0,2,10,0"/>
+                                                                    <StackPanel Grid.Column="1">
+                                                                        <WrapPanel>
+                                                                            <TextBlock Text="{Binding Title}" FontWeight="SemiBold" FontSize="14" Foreground="{StaticResource TextBrush}"/>
+                                                                            <TextBlock Text="{Binding RiskText}" Foreground="{Binding RiskBrush}" FontWeight="SemiBold"
+                                                                                       FontSize="12" Margin="10,1,0,0" VerticalAlignment="Center"/>
+                                                                            <TextBlock Text="{Binding SizeText}" Foreground="{StaticResource MutedBrush}"
+                                                                                       FontSize="12" Margin="10,1,0,0" VerticalAlignment="Center"/>
+                                                                        </WrapPanel>
+                                                                        <TextBlock Text="{Binding What}" Foreground="#334155" FontSize="13" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                                                        <TextBlock Text="{Binding SitesText}" Foreground="{Binding SitesBrush}" Visibility="{Binding SitesVisibility}"
+                                                                                   FontSize="12.5" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                                                        <TextBlock Text="{Binding Origin}" Foreground="#334155" FontSize="12.5" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                                                        <TextBlock Text="{Binding After}" Foreground="{StaticResource MutedBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                                                    </StackPanel>
+                                                                </Grid>
+                                                            </Border>
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+
                 <!-- Settings page -->
                 <ScrollViewer x:Name="PageSettings" x:FieldModifier="public" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
                     <StackPanel MaxWidth="780" HorizontalAlignment="Stretch" DataContext="{Binding Editor}">
@@ -227,6 +442,8 @@
                                 <CheckBox IsChecked="{Binding KillDesktop}" Content="{loc:T Set_KillDesktop}"/>
                                 <CheckBox IsChecked="{Binding KillCli}" Content="{loc:T Set_KillCli}"/>
                                 <CheckBox IsChecked="{Binding FailSafe}" Content="{loc:T Set_FailSafe}" Margin="0,14,0,0"/>
+                                <CheckBox IsChecked="{Binding SyncTimeZone}" Content="{loc:T Set_SyncTz}" Margin="0,8,0,0"/>
+                                <TextBlock Text="{loc:T Set_SyncTzHint}" Style="{StaticResource Sub}" FontSize="12" Margin="24,2,0,0" TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>
 

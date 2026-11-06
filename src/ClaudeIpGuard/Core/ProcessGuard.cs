@@ -1,5 +1,7 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Management;
+using System.ServiceProcess;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -14,7 +16,13 @@ public sealed record KillReport(TargetKind Kind, string Name, int Count);
 /// <summary>Finds and closes the Claude desktop app and the Claude Code CLI.</summary>
 public sealed class ProcessGuard
 {
+    public const string DesktopServiceName = "CoworkVMService";
+
     readonly string[]? _overrideTargets;
+    DateTime _nextServiceAttempt = DateTime.MinValue;
+
+    /// <summary>Raised when Windows refuses to stop the desktop app's service (needs admin).</summary>
+    public event Action<string>? ServiceStopDenied;
 
     /// <param name="overrideTargets">Test mode: close these process names instead of Claude (e.g. "notepad").</param>
     public ProcessGuard(IEnumerable<string>? overrideTargets = null)
@@ -35,7 +43,7 @@ public sealed class ProcessGuard
                 using var p = Process.GetProcessById(target.Pid);
                 if (p.HasExited) continue;
                 p.Kill(entireProcessTree: true);
-                var key = (target.Kind, target.Name);
+                var key = (target.Kind, target.Kind == TargetKind.Custom ? target.Name : "claude");
                 counts[key] = counts.GetValueOrDefault(key) + 1;
             }
             catch (ArgumentException)
@@ -47,6 +55,13 @@ public sealed class ProcessGuard
                 CrashLog.Write($"Could not close {target.Name} (pid {target.Pid})", ex);
             }
         }
+
+        if (_overrideTargets == null && settings.KillDesktopApp && StopDesktopService() > 0)
+        {
+            var key = (TargetKind.Desktop, "claude");
+            counts[key] = counts.GetValueOrDefault(key) + 1;
+        }
+
         return counts.Select(kv => new KillReport(kv.Key.Item1, kv.Key.Item2, kv.Value)).ToList();
     }
 
@@ -64,16 +79,42 @@ public sealed class ProcessGuard
 
         if (settings.KillDesktopApp || settings.KillCli)
         {
-            foreach (var p in Process.GetProcessesByName("claude"))
+            // Look at every process, not only claude.exe: the desktop app also starts helpers with
+            // other names from its install folder, and all of them must go (as in Task Manager).
+            int self = Environment.ProcessId;
+            foreach (var p in Process.GetProcesses())
             {
                 using (p)
                 {
-                    var path = GetImagePath(p.Id);
-                    var kind = path == null || IsDesktopPath(path) ? TargetKind.Desktop : TargetKind.Cli;
-                    if (path == null && !settings.KillDesktopApp) kind = TargetKind.Cli;
-                    if ((kind == TargetKind.Desktop && settings.KillDesktopApp) ||
-                        (kind == TargetKind.Cli && settings.KillCli))
-                        list.Add(new TargetProcess(p.Id, "claude", kind));
+                    try
+                    {
+                        // Session 0 = Windows services (e.g. cowork-svc.exe). Those are stopped through
+                        // the service manager in StopDesktopService, not killed.
+                        if (p.Id == self || p.Id <= 4 || p.SessionId == 0) continue;
+                        bool namedClaude = p.ProcessName.Equals("claude", StringComparison.OrdinalIgnoreCase);
+                        var path = GetImagePath(p.Id);
+                        if (path == null && !namedClaude) continue;
+
+                        TargetKind kind;
+                        if (path == null)
+                            kind = settings.KillDesktopApp ? TargetKind.Desktop : TargetKind.Cli;
+                        else if (IsDesktopPath(path))
+                            kind = TargetKind.Desktop;
+                        else if (IsDesktopBundledCliPath(path))
+                            kind = settings.KillDesktopApp ? TargetKind.Desktop : TargetKind.Cli;
+                        else if (namedClaude)
+                            kind = TargetKind.Cli;
+                        else
+                            continue;
+
+                        if ((kind == TargetKind.Desktop && settings.KillDesktopApp) ||
+                            (kind == TargetKind.Cli && settings.KillCli))
+                            list.Add(new TargetProcess(p.Id, p.ProcessName, kind));
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // Exited while we were looking at it.
+                    }
                 }
             }
         }
@@ -108,6 +149,44 @@ public sealed class ProcessGuard
         path.Contains(@"\AnthropicClaude\", StringComparison.OrdinalIgnoreCase) ||      // classic installer
         path.Contains(@"\Programs\Claude\", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>The Claude Code copy that the desktop app downloads and runs (%AppData%\Claude\claude-code\...).</summary>
+    public static bool IsDesktopBundledCliPath(string path) =>
+        path.Contains(@"\AppData\Roaming\Claude\", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The desktop app's background Windows service (Cowork VM). Only an admin may stop a service,
+    /// so when Windows refuses we report it once and retry later instead of every second.
+    /// </summary>
+    int StopDesktopService()
+    {
+        if (DateTime.UtcNow < _nextServiceAttempt) return 0;
+        try
+        {
+            using var sc = new ServiceController(DesktopServiceName);
+            var status = sc.Status; // throws if the service is not installed
+            if (status is ServiceControllerStatus.Stopped or ServiceControllerStatus.StopPending) return 0;
+            sc.Stop();
+            return 1;
+        }
+        catch (InvalidOperationException ex) when (ex.InnerException is Win32Exception { NativeErrorCode: 5 })
+        {
+            _nextServiceAttempt = DateTime.UtcNow.AddMinutes(10);
+            try { ServiceStopDenied?.Invoke(DesktopServiceName); }
+            catch (Exception cbEx) { CrashLog.Write("ServiceStopDenied handler failed", cbEx); }
+        }
+        catch (InvalidOperationException)
+        {
+            // Not installed (older desktop app or no Cowork): check again in a minute.
+            _nextServiceAttempt = DateTime.UtcNow.AddMinutes(1);
+        }
+        catch (Exception ex)
+        {
+            _nextServiceAttempt = DateTime.UtcNow.AddMinutes(1);
+            CrashLog.Write($"Could not stop service {DesktopServiceName}", ex);
+        }
+        return 0;
+    }
+
     public static bool IsClaudeCliCommandLine(string cmd) =>
         cmd.Contains("@anthropic-ai/claude-code", StringComparison.OrdinalIgnoreCase) ||
         cmd.Contains(@"@anthropic-ai\claude-code", StringComparison.OrdinalIgnoreCase);
@@ -119,7 +198,7 @@ public sealed class ProcessGuard
         return procs.Length > 0;
     }
 
-    static string? GetImagePath(int pid)
+    internal static string? GetImagePath(int pid)
     {
         var handle = OpenProcess(ProcessQueryLimitedInformation, false, pid);
         if (handle == IntPtr.Zero) return null;

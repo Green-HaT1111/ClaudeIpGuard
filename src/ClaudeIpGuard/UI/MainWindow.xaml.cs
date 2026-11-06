@@ -33,13 +33,35 @@ public partial class MainWindow : Window
 
     void Nav_Checked(object sender, RoutedEventArgs e)
     {
-        if (PageDashboard == null || PageActivity == null || PageSettings == null) return;
+        if (PageDashboard == null || PageActivity == null || PageSettings == null || PagePrivacy == null || PageBrowser == null) return;
         var tag = (string)((FrameworkElement)sender).Tag;
         PageDashboard.Visibility = tag == "dash" ? Visibility.Visible : Visibility.Collapsed;
         PageActivity.Visibility = tag == "activity" ? Visibility.Visible : Visibility.Collapsed;
+        PagePrivacy.Visibility = tag == "privacy" ? Visibility.Visible : Visibility.Collapsed;
+        PageBrowser.Visibility = tag == "browser" ? Visibility.Visible : Visibility.Collapsed;
         PageSettings.Visibility = tag == "settings" ? Visibility.Visible : Visibility.Collapsed;
         if (tag == "settings") _vm.Editor.LoadFrom(_host.Settings);
+        // Run the leak check automatically the first time the page is opened.
+        if (tag == "privacy" && !_vm.Privacy.HasRun) _ = _vm.Privacy.RunAsync();
+        if (tag == "browser" && !_vm.BrowserData.HasRun) _ = _vm.BrowserData.ScanAsync(notify: false);
     }
+
+    /// <summary>Opens the Browser data page (from the dashboard banner or the tray notification).</summary>
+    public void ShowBrowserData() => NavBrowser.IsChecked = true;
+
+    void RunLeakCheck_Click(object sender, RoutedEventArgs e) => _ = _vm.Privacy.RunAsync();
+
+    void KillSwitchOn_Click(object sender, RoutedEventArgs e) => _ = _vm.Privacy.TurnKillSwitchOnAsync(this);
+
+    void KillSwitchOff_Click(object sender, RoutedEventArgs e) => _ = _vm.Privacy.TurnKillSwitchOffAsync(this);
+
+    void ScanBrowsers_Click(object sender, RoutedEventArgs e) => _ = _vm.BrowserData.ScanAsync(notify: false);
+
+    void CleanBrowsers_Click(object sender, RoutedEventArgs e) => _ = _vm.BrowserData.CleanSelectedAsync(this);
+
+    void ReviewBrowserData_Click(object sender, RoutedEventArgs e) => ShowBrowserData();
+
+    void DismissBrowserBanner_Click(object sender, RoutedEventArgs e) => _vm.BrowserData.DismissBanner();
 
     void Lang_Checked(object sender, RoutedEventArgs e)
     {

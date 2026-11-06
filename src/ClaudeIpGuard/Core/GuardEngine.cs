@@ -20,6 +20,9 @@ public sealed class GuardEngine : IDisposable
     readonly Func<AppSettings> _settings;
     readonly IIpLocator _locator;
     readonly ProcessGuard _guard;
+    readonly TimeZoneSync? _timeZone;
+    string? _lastTzLog;
+    bool _autoTzWarned;
     readonly CancellationTokenSource _cts = new();
     readonly SemaphoreSlim _wake = new(0, 1);
     readonly object _enforceLock = new();
@@ -35,11 +38,13 @@ public sealed class GuardEngine : IDisposable
     public event Action? StateChanged;
     public event Action<ActivityEvent>? Activity;
 
-    public GuardEngine(Func<AppSettings> settings, IIpLocator locator, ProcessGuard guard)
+    public GuardEngine(Func<AppSettings> settings, IIpLocator locator, ProcessGuard guard, TimeZoneSync? timeZone = null)
     {
         _settings = settings;
         _locator = locator;
         _guard = guard;
+        _timeZone = timeZone;
+        _guard.ServiceStopDenied += name => Log(ActivityLevel.Warning, "Act_ServiceDenied", name);
         _networkDebounce = new Timer(_ => CheckNow());
     }
 
@@ -202,8 +207,45 @@ public sealed class GuardEngine : IDisposable
             }
         }
 
+        if (result != null && _settings().SyncTimeZone) SyncTimeZone(result);
+
         RaiseStateChanged();
         if (!_paused && ShouldBlock) Enforce();
+    }
+
+    /// <summary>Makes the Windows time zone match the IP's location. Repeated outcomes are logged once.</summary>
+    void SyncTimeZone(GeoResult r)
+    {
+        if (_timeZone == null) return;
+        try
+        {
+            var res = _timeZone.Apply(r.TimeZone);
+            var logKey = $"{res.Outcome}|{res.WindowsId}|{r.TimeZone}|{r.CountryCode}";
+            if (res.Outcome != TzOutcome.Changed && logKey == _lastTzLog) return;
+            _lastTzLog = logKey;
+
+            switch (res.Outcome)
+            {
+                case TzOutcome.Changed:
+                    Log(ActivityLevel.Info, "Act_TzChanged", TimeZoneSync.DisplayName(res.WindowsId!), r.CountryName);
+                    if (!_autoTzWarned && TimeZoneSync.WindowsAutoTimeZoneOn())
+                    {
+                        _autoTzWarned = true;
+                        Log(ActivityLevel.Warning, "Act_TzAutoOn");
+                    }
+                    break;
+                case TzOutcome.Failed:
+                    Log(ActivityLevel.Warning, "Act_TzFailed", res.WindowsId!, res.Error ?? "?");
+                    break;
+                case TzOutcome.Unknown:
+                    Log(ActivityLevel.Warning, "Act_TzUnknown", r.CountryName, r.TimeZone ?? "?");
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write("Time zone sync failed", ex);
+        }
     }
 
     async Task EnforceLoopAsync()
