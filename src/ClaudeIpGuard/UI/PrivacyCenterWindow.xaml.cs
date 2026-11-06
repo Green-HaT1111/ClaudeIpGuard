@@ -94,7 +94,7 @@ public partial class PrivacyCenterWindow : Window
                 ? $"سیستم‌عامل: {_report.OsCaption} | آداپتورهای VPN: {_report.VpnAdapters.Count} | پروفایل‌ها: {_report.OpenVpnConfigs.Count}"
                 : $"OS: {_report.OsCaption} | VPN adapters: {_report.VpnAdapters.Count} | profiles: {_report.OpenVpnConfigs.Count}";
             EnableKillSwitchButton.IsEnabled = _report.CanEnableKillSwitch && !_report.KillSwitchActive;
-            RestoreFirewallButton.IsEnabled = _report.KillSwitchActive;
+            RestoreFirewallButton.IsEnabled = _report.HasFirewallBackup;
         }
         catch (Exception ex)
         {
