@@ -44,6 +44,7 @@ public partial class App : Application, IAppHost
     volatile AppSettings _settings = new();
     GuardEngine? _engine;
     TrayIcon? _tray;
+    PrivacyMonitor? _privacyMonitor;
     MainWindow? _window;
     bool _exiting;
 
@@ -115,6 +116,11 @@ public partial class App : Application, IAppHost
         _window = new MainWindow(vm, this);
         if (options.TestMode) _window.Title += " [TEST]";
         _tray = new TrayIcon(_engine, ShowDashboard, () => RequestExit(null));
+        if (!options.TestMode)
+        {
+            _privacyMonitor = new PrivacyMonitor(_tray.ShowNotification);
+            _privacyMonitor.Start();
+        }
         _engine.Start();
 
         if (!options.Minimized) ShowDashboard();
@@ -194,6 +200,7 @@ public partial class App : Application, IAppHost
     {
         if (_exiting) return;
         _exiting = true;
+        _privacyMonitor?.Dispose();
         _engine?.Dispose();
         _tray?.Dispose();
         if (_window != null)
