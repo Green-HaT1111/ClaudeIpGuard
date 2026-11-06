@@ -22,7 +22,7 @@ foreach($line in ($lines | Where-Object {$_ -match '^\s*remote\s+'})){
  $parts=@($line.Trim() -split '\s+')
  if($parts.Count -lt 2){continue}
  $host=$parts[1]; $parsed=$null
- if(-not[System.Net.IPAddress]::TryParse($host,[ref]$parsed)){throw "Remote endpoint '$host' is a hostname. Strict mode requires numeric remote IPs; no firewall changes were made."}
+ if (-not [System.Net.IPAddress]::TryParse($host,[ref]$parsed)){throw "Remote endpoint '$host' is a hostname. Strict mode requires numeric remote IPs; no firewall changes were made."}
  $port=1194
  if($parts.Count -ge 3 -and $parts[2] -match '^\d+$'){$port=[int]$parts[2]}
  $protoText=if($parts.Count -ge 4){$parts[3].ToLowerInvariant()}else{'udp'}
@@ -65,6 +65,8 @@ try{
   New-NetFirewallRule -Name ("CIG_KS_ENDPOINT_{0}" -f $n) -DisplayName 'Claude IP Guard - OpenVPN server endpoint' -Direction Outbound -Action Allow -InterfaceAlias $physicalNames -RemoteAddress $ep.Address -RemotePort $ep.Port -Protocol $ep.Protocol -Profile Any -Enabled True | Out-Null
  }
  New-NetFirewallRule -Name 'CIG_KS_DHCP' -DisplayName 'Claude IP Guard - DHCP lease renewal' -Direction Outbound -Action Allow -InterfaceAlias $physicalNames -Protocol UDP -LocalPort 68 -RemotePort 67 -Profile Any -Enabled True | Out-Null
+ $residualAllow=@(Get-NetFirewallRule -PolicyStore ActiveStore -Direction Outbound -Action Allow -Enabled True -ErrorAction SilentlyContinue | Where-Object {$_.Name -notlike 'CIG_KS_*'})
+ if($residualAllow.Count -gt 0){throw "Could not disable every pre-existing outbound allow rule ($($residualAllow.Count) remain). Kill switch was rolled back."}
  $verify=@(Get-NetFirewallProfile)
  if(@($verify | Where-Object {$_.DefaultOutboundAction -ne 'Block'}).Count -gt 0){throw 'Default outbound block could not be verified on every firewall profile.'}
  if(-not(Get-NetFirewallRule -Name 'CIG_KS_VPN_INTERFACE' -ErrorAction SilentlyContinue)){throw 'VPN interface allow rule could not be verified.'}
