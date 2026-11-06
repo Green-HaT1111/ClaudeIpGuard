@@ -41,8 +41,9 @@ public sealed class GeoIpService : IIpLocator, IDisposable
     readonly Dictionary<string, (GeoResult Result, DateTime At)> _cache = new();
     readonly (string Name, Func<string, CancellationToken, Task<GeoResult?>> Lookup)[] _providers;
 
-    public GeoIpService()
+    public GeoIpService(bool requireVpnProtection = true)
     {
+        _requireVpnProtection = requireVpnProtection;
         var handler = new SocketsHttpHandler
         {
             // No connection reuse: after a VPN or Wi-Fi switch every check must use the new route.
@@ -65,6 +66,9 @@ public sealed class GeoIpService : IIpLocator, IDisposable
 
     public async Task<GeoResult> LocateAsync(CancellationToken ct)
     {
+        if (_requireVpnProtection && !await VpnProtectionStatus.IsReadyAsync(ct))
+            throw new GeoLookupException("Public IP lookup is disabled until the VPN-only Windows Firewall kill switch is active and an OpenVPN tunnel route is verified. No external IP service was contacted.");
+
         var errors = new List<string>();
         var ip = await GetPublicIpAsync(errors, ct)
                  ?? throw new GeoLookupException("Could not get public IP (" + string.Join("; ", errors) + ")");
