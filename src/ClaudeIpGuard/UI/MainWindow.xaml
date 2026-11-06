@@ -102,6 +102,7 @@
                                     </Button>
                                     <Button Style="{StaticResource GlassButton}" Click="PauseResume_Click" Margin="0,8,0,0" Content="{Binding PauseButtonText}"/>
                                     <Button Style="{StaticResource GlassButton}" Click="Hide_Click" Margin="0,8,0,0" Content="{loc:T Btn_Hide}"/>
+                                    <Button Style="{StaticResource GlassButton}" Click="PrivacyCenter_Click" Margin="0,8,0,0" Content="{loc:T Btn_PrivacyCenter}"/>
                                 </StackPanel>
                             </Grid>
                         </Border>
