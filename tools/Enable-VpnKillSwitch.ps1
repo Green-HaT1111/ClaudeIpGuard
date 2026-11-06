@@ -21,11 +21,11 @@ $endpoints=@()
 foreach($line in ($lines | Where-Object {$_ -match '^\s*remote\s+'})){
  $parts=@($line.Trim() -split '\s+')
  if($parts.Count -lt 2){continue}
- $host=$parts[1]; $parsed=$null
- if (-not [System.Net.IPAddress]::TryParse($host,[ref]$parsed)){throw "Remote endpoint '$host' is a hostname. Strict mode requires numeric remote IPs; no firewall changes were made."}
+ $remoteHost=$parts[1]; $parsed=$null
+ if (-not [System.Net.IPAddress]::TryParse($remoteHost,[ref]$parsed)){throw "Remote endpoint '$remoteHost' is a hostname. Strict mode requires numeric remote IPs; no firewall changes were made."}
  $port=1194
  if($parts.Count -ge 3 -and $parts[2] -match '^\d+$'){$port=[int]$parts[2]}
- $protoText=if($parts.Count -ge 4){$parts[3].ToLowerInvariant()}else{'udp'}
+ $protoText=if($parts.Count -ge 4){$parts[3].ToLowerInvariant()}elseif($parts.Count -ge 3 -and $parts[2] -match '^(tcp|udp)'){$parts[2].ToLowerInvariant()}else{'udp'}
  $protocol=if($protoText -match '^tcp'){'TCP'}elseif($protoText -match '^udp'){'UDP'}else{throw "Unsupported remote protocol '$protoText'."}
  $endpoints += [pscustomobject]@{Address=$parsed.IPAddressToString;Port=$port;Protocol=$protocol}
 }
