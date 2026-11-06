@@ -82,19 +82,28 @@ try {
  $hasTunnel=@($ksRules | Where-Object Name -eq 'CIG_KS_VPN_INTERFACE').Count -gt 0
  $hasEndpoint=@($ksRules | Where-Object { $_.Name -like 'CIG_KS_ENDPOINT_*' }).Count -gt 0
  $hasDhcp=@($ksRules | Where-Object Name -eq 'CIG_KS_DHCP').Count -gt 0
- $killSwitchActive=$blocked -and $hasTunnel -and $hasEndpoint -and $hasDhcp
+ $residual=@(Get-NetFirewallRule -PolicyStore ActiveStore -Direction Outbound -Action Allow -Enabled True -ErrorAction SilentlyContinue | Where-Object {$_.Name -notlike 'CIG_KS_*'})
+ $killSwitchActive=$blocked -and $hasTunnel -and $hasEndpoint -and $hasDhcp -and $residual.Count -eq 0
 } catch {}
 
-$openVpnBinary=@((Join-Path $env:ProgramFiles 'OpenVPN\bin\openvpn.exe'),(Join-Path ([Environment]::GetEnvironmentVariable('ProgramFiles(x86)')) 'OpenVPN\bin\openvpn.exe')) | Where-Object { $_ -and (Test-Path $_) }
 $canEnableKillSwitch=$false
-if (-not $killSwitchActive -and $vpnAdapters.Count -eq 1 -and $profileFiles.Count -gt 0 -and $openVpnBinary.Count -gt 0) {
+if (-not $killSwitchActive -and $vpnAdapters.Count -eq 1 -and $profileFiles.Count -gt 0) {
+ $selectedAdapter=Get-NetAdapter -Name $vpnAdapters[0] -ErrorAction SilentlyContinue
+ $routeReady=$false
+ if($selectedAdapter -and $selectedAdapter.Status -eq 'Up'){
+  $routeReady=@(Get-NetRoute -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {
+   $_.InterfaceIndex -eq $selectedAdapter.ifIndex -and $_.DestinationPrefix -in @('0.0.0.0/0','0.0.0.0/1','128.0.0.0/1')
+  }).Count -gt 0
+ }
  foreach ($file in $profileFiles) {
   try {
    $lines=Get-Content -LiteralPath $file.FullName
    $hasFull=[bool]($lines | Where-Object { $_ -match '^\s*redirect-gateway\b' } | Select-Object -First 1)
    $remotes=@($lines | Where-Object { $_ -match '^\s*remote\s+' })
-   $hasNumeric=$remotes.Count -gt 0 -and @($remotes | Where-Object { $_ -notmatch '^\s*remote\s+(\d{1,3}\.){3}\d{1,3}\s+' -and $_ -notmatch '^\s*remote\s+\[[0-9a-fA-F:]+\]\s+' }).Count -eq 0
-   if ($hasFull -and $hasNumeric) { $canEnableKillSwitch=$true; break }
+   $hasNumeric=$remotes.Count -gt 0 -and @($remotes | Where-Object {
+    $_ -notmatch '^\s*remote\s+(\d{1,3}\.){3}\d{1,3}\s+' -and $_ -notmatch '^\s*remote\s+\[[0-9a-fA-F:]+\]\s+'
+   }).Count -eq 0
+   if ($hasFull -and $hasNumeric -and $routeReady) { $canEnableKillSwitch=$true; break }
   } catch {}
  }
 }
