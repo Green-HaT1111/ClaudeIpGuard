@@ -51,11 +51,11 @@ if ($profileFiles.Count -eq 0) {
  foreach ($file in $profileFiles) {
   try {
    $lines=Get-Content -LiteralPath $file.FullName
-   if ($lines | Where-Object { $_ -match '^\s*redirect-gateway\b' } | Select-Object -First 1) { $fullTunnel++ }
-   if ($lines | Where-Object { $_ -match '^\s*block-outside-dns\b' } | Select-Object -First 1) { $dnsBlock++ }
-   if ($lines | Where-Object { $_ -match '^\s*redirect-gateway\b.*\bipv6\b|^\s*route-ipv6\s+::/0\b' } | Select-Object -First 1) { $ipv6Tunnel++ }
+   if ($lines | Where-Object { $_ -match '^\s*redirect-gateway\b' } | Select-Object -First 1) { $fullTunnel = $fullTunnel + 1 }
+   if ($lines | Where-Object { $_ -match '^\s*block-outside-dns\b' } | Select-Object -First 1) { $dnsBlock = $dnsBlock + 1 }
+   if ($lines | Where-Object { $_ -match '^\s*redirect-gateway\b.*\bipv6\b|^\s*route-ipv6\s+::/0\b' } | Select-Object -First 1) { $ipv6Tunnel = $ipv6Tunnel + 1 }
    $remotes=@($lines | Where-Object { $_ -match '^\s*remote\s+' })
-   if ($remotes.Count -gt 0 -and @($remotes | Where-Object { $_ -notmatch '^\s*remote\s+(\d{1,3}\.){3}\d{1,3}\s+' -and $_ -notmatch '^\s*remote\s+\[[0-9a-fA-F:]+\]\s+' }).Count -eq 0) { $numericRemote++ }
+   if ($remotes.Count -gt 0 -and @($remotes | Where-Object { $_ -notmatch '^\s*remote\s+(\d{1,3}\.){3}\d{1,3}\s+' -and $_ -notmatch '^\s*remote\s+\[[0-9a-fA-F:]+\]\s+' }).Count -eq 0) { $numericRemote = $numericRemote + 1 }
   } catch {}
  }
  if ($fullTunnel -eq 0) {
