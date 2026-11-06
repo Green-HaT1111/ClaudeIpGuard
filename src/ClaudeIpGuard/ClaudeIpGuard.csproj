@@ -32,4 +32,12 @@
     <PackageReference Include="System.Management" Version="8.0.0" />
   </ItemGroup>
 
+  <!-- Ship the Windows privacy audit and reversible remediation scripts with the app. -->
+  <ItemGroup>
+    <Content Include="..\..\tools\*.ps1"
+             Link="Tools\%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="Always" />
+  </ItemGroup>
+
 </Project>
