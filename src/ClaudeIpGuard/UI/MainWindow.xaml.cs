@@ -61,6 +61,12 @@ public partial class MainWindow : Window
 
     void Hide_Click(object sender, RoutedEventArgs e) => Hide();
 
+    void PrivacyCenter_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new PrivacyCenterWindow { Owner = this };
+        window.ShowDialog();
+    }
+
     void Exit_Click(object sender, RoutedEventArgs e) => _host.RequestExit(this);
 
     void ClearActivity_Click(object sender, RoutedEventArgs e) => _vm.ClearActivity();
