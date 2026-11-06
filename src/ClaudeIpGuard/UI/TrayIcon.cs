@@ -45,6 +45,21 @@ public sealed class TrayIcon : IDisposable
         };
     }
 
+    public void ShowNotification(string title, string message)
+    {
+        _dispatcher.BeginInvoke(() =>
+        {
+            try
+            {
+                _icon.BalloonTipTitle = title.Length > 63 ? title[..63] : title;
+                _icon.BalloonTipText = message.Length > 255 ? message[..255] : message;
+                _icon.BalloonTipIcon = WF.ToolTipIcon.Warning;
+                _icon.ShowBalloonTip(6000);
+            }
+            catch (Exception ex) { CrashLog.Write("Could not show privacy notification", ex); }
+        });
+    }
+
     void BuildMenu()
     {
         var L = Loc.Instance;
