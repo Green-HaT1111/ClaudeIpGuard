@@ -79,8 +79,8 @@ Check(remoteEndpoints[2].Host == "2001:db8::1" && remoteEndpoints[2].Port == 119
 var profileDir = Path.Combine(tempData, "profiles");
 Directory.CreateDirectory(profileDir);
 var rootProfile = Path.Combine(profileDir, "client.ovpn");
-File.WriteAllText(rootProfile, "remote 203.0.113.20 1194 udp\\r\\nconfig extra.ovpn\\r\\n");
-File.WriteAllText(Path.Combine(profileDir, "extra.ovpn"), "remote vpn-backup.example.net 443 tcp-client\\r\\n");
+File.WriteAllText(rootProfile, "remote 203.0.113.20 1194 udp\r\nconfig extra.ovpn\r\n");
+File.WriteAllText(Path.Combine(profileDir, "extra.ovpn"), "remote vpn-backup.example.net 443 tcp-client\r\n");
 var includedEndpoints = OpenVpnProfileReader.ReadRemoteEndpoints(rootProfile);
 Check(includedEndpoints.Count == 2, "OpenVPN profile reader follows relative config includes");
 
