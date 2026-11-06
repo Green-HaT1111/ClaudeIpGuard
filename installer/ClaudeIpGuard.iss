@@ -1,6 +1,6 @@
 ; Inno Setup script for Claude IP Guard. Build with build.ps1 (it publishes the app first).
 #define AppName "Claude IP Guard"
-#define AppVersion "1.0.0"
+#define AppVersion "1.1.0"
 #define AppExe "ClaudeIpGuard.exe"
 
 [Setup]
