@@ -46,7 +46,7 @@ function Get-ExistingKillSwitchRules {
 }
 
 function Remove-KillSwitchRules {
-    $existing = Get-ExistingKillSwitchRules
+    $existing = @(Get-ExistingKillSwitchRules)
     if ($existing.Count -gt 0) {
         $existing | Remove-NetFirewallRule -ErrorAction Stop
     }
@@ -105,7 +105,8 @@ function Test-KillSwitchPlan {
     if (Test-Path -LiteralPath $BackupFile) {
         throw "An existing firewall backup was found. Disable the current Kill Switch before planning a new one."
     }
-    if ((Get-ExistingKillSwitchRules).Count -gt 0) {
+    $existingRules = @(Get-ExistingKillSwitchRules)
+    if ($existingRules.Count -gt 0) {
         throw "Claude IP Guard rules already exist but no backup was found. Refusing to plan over an unknown state."
     }
 
@@ -158,7 +159,8 @@ function Enable-KillSwitch {
     if (Test-Path -LiteralPath $BackupFile) {
         throw "An existing firewall backup was found. Disable the current Kill Switch first; do not overwrite the original backup."
     }
-    if ((Get-ExistingKillSwitchRules).Count -gt 0) {
+    $existingRules = @(Get-ExistingKillSwitchRules)
+    if ($existingRules.Count -gt 0) {
         throw "Claude IP Guard firewall rules already exist but no backup was found. Refusing to modify firewall state."
     }
 
