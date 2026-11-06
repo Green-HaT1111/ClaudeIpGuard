@@ -40,6 +40,7 @@ static class Strings
         ["Btn_Pause"] = "Pause protection",
         ["Btn_Resume"] = "Resume protection",
         ["Btn_Hide"] = "Hide to tray",
+        ["Btn_PrivacyCenter"] = "Privacy center",
         ["Last_Error"] = "Last error: {0}",
 
         ["Activity_Title"] = "Activity",
@@ -165,6 +166,7 @@ static class Strings
         ["Btn_Pause"] = "توقف محافظت",
         ["Btn_Resume"] = "ادامه‌ی محافظت",
         ["Btn_Hide"] = "پنهان در ناحیه اعلان",
+        ["Btn_PrivacyCenter"] = "مرکز حریم خصوصی",
         ["Last_Error"] = "آخرین خطا: {0}",
 
         ["Activity_Title"] = "رویدادها",
