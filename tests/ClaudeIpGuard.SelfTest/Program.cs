@@ -56,6 +56,12 @@ Check(ProcessGuard.IsDesktopPath(@"C:\Program Files\WindowsApps\Claude_4.4212.0.
 Check(ProcessGuard.IsDesktopPath(@"C:\Users\x\AppData\Local\AnthropicClaude\app-1.0\claude.exe"), "classic desktop path detected");
 Check(!ProcessGuard.IsDesktopPath(@"C:\Users\x\.local\bin\claude.exe"), "CLI path is not desktop");
 Check(ProcessGuard.IsClaudeCliCommandLine(@"node C:\npm\node_modules\@anthropic-ai\claude-code\cli.js"), "npm CLI command line detected");
+Check(VpnNetworkInspector.IsOpenVpnProcessName("OpenVPNConnect.exe"), "OpenVPN Connect GUI process detected");
+Check(VpnNetworkInspector.IsOpenVpnProcessName("agent_ovpnconnect.exe"), "OpenVPN Connect agent process detected");
+Check(VpnNetworkInspector.IsOpenVpnProcessName("ovpnhelper_service.exe"), "OpenVPN Connect helper process detected");
+Check(!VpnNetworkInspector.IsOpenVpnProcessName("chrome.exe"), "unrelated process is not classified as OpenVPN");
+Check(VpnNetworkInspector.IsLikelyOpenVpnAdapter("Local Area Connection", "TAP-Windows Adapter V9 for OpenVPN Connect"),
+      "OpenVPN Connect TAP adapter detected");
 
  
 // 2b. OpenVPN profile parsing (only endpoint settings are extracted; credentials are not read into logs).

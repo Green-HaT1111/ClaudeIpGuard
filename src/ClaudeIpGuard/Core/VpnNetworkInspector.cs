@@ -58,7 +58,7 @@ public sealed record VpnNetworkSnapshot(
     public string Fingerprint =>
         string.Join("|",
             string.Join(",", ActiveVpnAdapters.Select(a => a.Name).OrderBy(x => x)),
-            OpenVpnProcesses.Count,
+            string.Join(",", OpenVpnProcesses.Select(p => p.Name).OrderBy(x => x, StringComparer.OrdinalIgnoreCase)),
             HasNonVpnIpv6DefaultGateway,
             HasDnsOnNonVpnAdapter,
             Location.ServiceState,
@@ -77,13 +77,24 @@ public sealed class VpnNetworkInspector
     static readonly string[] OpenVpnNames =
     {
         "openvpn.exe", "openvpn-gui.exe", "openvpnserv2.exe",
-        "openvpnconnect.exe", "ovpnconnector.exe"
+        "openvpnconnect.exe", "agent_ovpnconnect.exe",
+        "ovpnhelper_service.exe", "ovpnconnector.exe"
     };
 
     static readonly string[] VpnAdapterTokens =
     {
         "openvpn", "tap-windows", "wintun", "dco", "tun"
     };
+
+    public static bool IsOpenVpnProcessName(string? name) =>
+        !string.IsNullOrWhiteSpace(name) &&
+        OpenVpnNames.Contains(Path.GetFileName(name), StringComparer.OrdinalIgnoreCase);
+
+    public static bool IsLikelyOpenVpnAdapter(string? name, string? description)
+    {
+        var value = $"{name} {description}";
+        return VpnAdapterTokens.Any(token => value.Contains(token, StringComparison.OrdinalIgnoreCase));
+    }
 
     public VpnNetworkSnapshot Inspect()
     {
@@ -120,9 +131,7 @@ public sealed class VpnNetworkInspector
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToArray();
 
-                var text = $"{nic.Name} {nic.Description}";
-                var isVpn = VpnAdapterTokens.Any(token =>
-                    text.Contains(token, StringComparison.OrdinalIgnoreCase));
+                var isVpn = IsLikelyOpenVpnAdapter(nic.Name, nic.Description);
 
                 list.Add(new VpnAdapterInfo(
                     nic.Name,
