@@ -1,0 +1,74 @@
+name: Windows build, PowerShell validation and self-test
+
+on:
+  push:
+    branches:
+      - "privacy-hardening/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-build-test:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Parse all PowerShell tools
+        shell: powershell
+        run: |
+          $files = Get-ChildItem -Path tools -Filter *.ps1 -File
+          if ($files.Count -eq 0) { throw "No PowerShell tools found." }
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $file.FullName, [ref]$tokens, [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              Write-Host "PowerShell parse errors in $($file.FullName):"
+              $errors | ForEach-Object { Write-Host $_.Message }
+              throw "PowerShell syntax validation failed."
+            }
+            Write-Host "PASS $($file.Name)"
+          }
+
+      - name: Restore and build solution
+        run: dotnet build ClaudeIpGuard.sln -c Release
+
+      - name: Run application self-test
+        run: dotnet run --project tests/ClaudeIpGuard.SelfTest/ClaudeIpGuard.SelfTest.csproj -c Release --no-build
+
+      - name: Install Inno Setup
+        shell: powershell
+        run: choco install innosetup --yes --no-progress
+
+      - name: Publish application and build installer
+        shell: powershell
+        run: |
+          .\build.ps1
+          if (-not (Test-Path "dist\ClaudeIpGuard-Setup-1.1.0.exe")) {
+            throw "Expected installer was not created."
+          }
+          Compress-Archive -Path "publish\*" -DestinationPath "dist\ClaudeIpGuard-publish-1.1.0.zip" -Force
+
+      - name: Upload Windows build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClaudeIpGuard-Windows-1.1.0
+          path: |
+            dist/ClaudeIpGuard-Setup-1.1.0.exe
+            dist/ClaudeIpGuard-publish-1.1.0.zip
+          if-no-files-found: error
+          retention-days: 30
