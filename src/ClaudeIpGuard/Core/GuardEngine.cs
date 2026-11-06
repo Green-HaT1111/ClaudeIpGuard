@@ -154,6 +154,7 @@ public sealed class GuardEngine : IDisposable
 
     async Task RunCheckAsync(CancellationToken ct)
     {
+        AuditNetwork();
         _checking = true;
         RaiseStateChanged();
         GeoResult? result = null;

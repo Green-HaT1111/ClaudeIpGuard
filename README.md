@@ -47,6 +47,30 @@ Claude will be closed whenever your IP is in any other country.
 Closing the window only hides it; the app keeps running in the tray (shield icon, colored by status).
 It runs until you choose **Exit program** (sidebar or tray menu).
 
+## Network privacy diagnostics
+
+The development branch `feature/openvpn-killswitch-privacy-audit` adds a network audit to the
+Activity log. It records OpenVPN-related processes, likely OpenVPN/TAP/Wintun interfaces, DNS
+servers assigned to non-VPN adapters, non-VPN IPv6 default routes, and the Windows Location Service
+and current-user location preference.
+
+These are **risk indicators**, not proof that a leak occurred. For example, a physical adapter can
+retain DNS settings even when the VPN client routes DNS through its tunnel. The audit deliberately
+does not change firewall rules or Windows privacy settings.
+
+The OpenVPN profile reader extracts only `remote`, `proto`, and `port` directives and follows
+relative `config` includes. It does not transmit or log profile credentials, certificates, keys,
+or authentication data.
+
+**Important Windows 10 limitation:** classic desktop applications do not have a reliable
+per-application precise-location permission switch. Disabling Windows Location Service is a
+device/user-wide action and can affect other applications. The audit reports this limitation rather
+than silently changing a global setting.
+
+The full-system firewall kill switch is a separate next implementation step. It must be configured
+with the exact VPN client executable, server IP/port/protocol, and tunnel interface; allowing all
+traffic from an unknown VPN executable would defeat the purpose of the kill switch.
+
 ## Password
 
 On first launch the app asks you to create a password. It is required to **pause protection**,

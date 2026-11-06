@@ -1,0 +1,25 @@
+name: Windows build
+
+on:
+  push:
+    branches:
+      - main
+      - "feature/**"
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Restore solution
+        run: dotnet restore ClaudeIpGuard.sln
+      - name: Build application and self-test harness
+        run: dotnet build ClaudeIpGuard.sln --configuration Release --no-restore

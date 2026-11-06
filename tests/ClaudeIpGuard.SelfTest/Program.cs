@@ -57,6 +57,33 @@ Check(ProcessGuard.IsDesktopPath(@"C:\Users\x\AppData\Local\AnthropicClaude\app-
 Check(!ProcessGuard.IsDesktopPath(@"C:\Users\x\.local\bin\claude.exe"), "CLI path is not desktop");
 Check(ProcessGuard.IsClaudeCliCommandLine(@"node C:\npm\node_modules\@anthropic-ai\claude-code\cli.js"), "npm CLI command line detected");
 
+ 
+// 2b. OpenVPN profile parsing (only endpoint settings are extracted; credentials are not read into logs).
+var sampleProfile = @"
+# Global client options
+proto tcp-client
+port 443
+remote vpn-a.example.net
+remote 198.51.100.20 1195 udp
+remote 2001:db8::1 1196 tcp6-client
+";
+var remoteEndpoints = OpenVpnProfileParser.ParseRemoteDirectives(sampleProfile);
+Check(remoteEndpoints.Count == 3, "OpenVPN parser finds all remote directives");
+Check(remoteEndpoints[0].Host == "vpn-a.example.net" && remoteEndpoints[0].Port == 443 &&
+      remoteEndpoints[0].Protocol == "TCP", "OpenVPN parser applies global proto and port defaults");
+Check(remoteEndpoints[1].Host == "198.51.100.20" && remoteEndpoints[1].Port == 1195 &&
+      remoteEndpoints[1].Protocol == "UDP", "OpenVPN parser reads per-remote UDP settings");
+Check(remoteEndpoints[2].Host == "2001:db8::1" && remoteEndpoints[2].Port == 1196 &&
+      remoteEndpoints[2].Protocol == "TCP", "OpenVPN parser normalizes TCP client protocol variants");
+
+var profileDir = Path.Combine(tempData, "profiles");
+Directory.CreateDirectory(profileDir);
+var rootProfile = Path.Combine(profileDir, "client.ovpn");
+File.WriteAllText(rootProfile, "remote 203.0.113.20 1194 udp\\r\\nconfig extra.ovpn\\r\\n");
+File.WriteAllText(Path.Combine(profileDir, "extra.ovpn"), "remote vpn-backup.example.net 443 tcp-client\\r\\n");
+var includedEndpoints = OpenVpnProfileReader.ReadRemoteEndpoints(rootProfile);
+Check(includedEndpoints.Count == 2, "OpenVPN profile reader follows relative config includes");
+
 // 3. Live IP lookup
 using (var geo = new GeoIpService())
 {
