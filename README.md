@@ -1,105 +1,98 @@
 # Claude IP Guard
 
-A Windows 10/11 tray app that checks your public IP address and closes **Claude** (desktop app and
-Claude Code CLI) when the IP is not in an allowed country. By default the allowed list is every
-European country.
+Claude IP Guard is a Windows 10 tray application that protects Claude Desktop and Claude Code with an IP-country allow-list, plus an optional Windows-wide VPN-only firewall kill switch and a privacy audit center.
 
-## How it works
+> Important: No local application can guarantee that no person or service can ever infer a user's real-world location. This project reduces specific, testable disclosure paths. Claude and other online services still receive the public VPN exit IP and may infer identity or region from account information, time zone, content, or server-side records.
 
-- Checks your public IP every 30 seconds (configurable, 10–3600 s), and again right after any network
-  change (Wi-Fi switch, VPN on/off, cable plugged in).
-- Public IP: `api.ipify.org`, falling back to `icanhazip.com`, `checkip.amazonaws.com`, `ifconfig.me`.
-- Country: `ipwho.is`, falling back to `country.is`, `freeipapi.com`, `ipapi.co`. The country is cached
-  per IP for 6 hours, so the 30-second checks only make one small request.
-- **Not allowed** → Claude is closed immediately, and closed again every second if it is reopened.
-- **Can't verify** (offline, all services down) → Claude is blocked too (fail-safe, can be turned off).
-- Uses the IP the internet sees. With a VPN, that is the VPN's country.
+## Existing Claude protection
 
-What gets closed:
+- Checks the public IP and country at a configurable interval (10–3600 seconds), and after network changes.
+- Closes Claude Desktop and Claude Code when the observed public IP is outside the configured country allow-list.
+- Fail-safe mode can close Claude when the location cannot be verified.
+- English and Persian (right-to-left) interface, activity log, country picker, tray icon and password-protected settings.
 
-| Setting | Processes |
-|---|---|
-| Claude desktop app | `claude.exe` from the Microsoft Store package (`WindowsApps\Claude_*`) or `%LocalAppData%\AnthropicClaude` |
-| Claude Code CLI | any other `claude.exe` (native installer), and `node.exe` running `@anthropic-ai/claude-code` (npm install) |
+## Privacy Center
 
-## Dashboard
+Open **Privacy center / مرکز حریم خصوصی** from the dashboard.
 
-- **Dashboard**: status (green allowed / red blocked / amber paused), public IP, country, city,
-  lookup service, last/next check, counters. Buttons: Check now, Pause/Resume, Hide to tray.
-- **Activity**: log of checks, location changes and every time Claude was closed.
-- **Settings**: interval, which apps to close, fail-safe, allowed countries, change password.
+The current audit checks:
+- Windows Location service, machine policies and current-user location consent.
+- Claude Chromium Preferences for a known explicit geolocation-allow pattern (heuristic; not proof that location data was sent).
+- OpenVPN profile presence and selected directives: `redirect-gateway`, `block-outside-dns`, IPv6 routing and numeric `remote` endpoints.
+- Active OpenVPN/TAP/Wintun/DCO adapter and full-tunnel routes.
+- Presence of the Claude IP Guard firewall kill-switch policy and unexpected outbound allow rules.
+- Temporary Claude cache folders.
 
-### Choosing countries
+Findings explain the risk and recommended action in English and Persian. Audit results are local; the audit itself does not call online IP/geolocation services.
 
-Settings has a picker with all 250 countries and territories, grouped into 10 regions (Europe,
-North America, Central America & Caribbean, South America, Middle East & Caucasus, Central & South
-Asia, East & Southeast Asia, Africa, Oceania, Antarctica & remote islands).
+## Safe remediation
 
-- Tick single countries, or tick a region to select all of its countries (a partly filled box means
-  some of the region is selected; the counter shows e.g. `2/53`).
-- Search by name or code (`korea`, `US`). **Select all** / **Clear all** apply to the search results.
-- **Europe only** restores the default.
+**Apply safe fixes** requests administrator permission and:
+- Saves the current Windows location service/policy/consent settings under `%ProgramData%\ClaudeIpGuard\privacy-settings-backup.json`.
+- Denies Windows app location access, disables/stops the Windows Location service and flushes the Windows DNS resolver cache.
+- When Claude Desktop and Claude Code are closed, backs up and clears only temporary Claude cache folders (`Cache`, `Code Cache`, `GPUCache`, `DawnCache`).
 
-Example: tick United Kingdom, United States, Canada and Germany, save with your password, and
-Claude will be closed whenever your IP is in any other country.
-- Language: English or Persian (فارسی, right-to-left), switchable in the sidebar.
+The cleanup deliberately does not touch browser cookies, Local Storage, IndexedDB, login databases, account tokens, credentials or Claude session databases. Cache backup folders are retained under `%ProgramData%\ClaudeIpGuard\Claude-cache-backup-*`.
 
-Closing the window only hides it; the app keeps running in the tray (shield icon, colored by status).
-It runs until you choose **Exit program** (sidebar or tray menu).
+Use **Restore location settings** to restore the saved Windows location settings. It does not restore deleted cache folders; those backups remain available for manual recovery.
 
-## Password
+## VPN-only Windows Firewall kill switch
 
-On first launch the app asks you to create a password. It is required to **pause protection**,
-**save settings**, **change the password** and **exit**. It is stored as a salted PBKDF2-SHA256 hash
-in `%AppData%\ClaudeIpGuard\settings.json`, never in plain text.
+The strict kill switch is intentionally Windows-wide, matching the selected "Option C" behaviour: while active, only traffic through the verified VPN tunnel and the exact OpenVPN server endpoint(s) is allowed. If the tunnel drops, ordinary outbound internet access for every application is blocked, not only Claude. Inbound/default Windows Firewall behaviour is not changed.
 
-Forgot it? Uninstall and delete `%AppData%\ClaudeIpGuard\` (an administrator can always end the
-process in Task Manager).
+Before the UI enables activation, it looks for one active OpenVPN tunnel adapter, a full-tunnel `.ovpn` profile and numeric server IP endpoints. The elevated script validates that the active default/split-default IPv4 route uses the selected tunnel. It refuses to proceed when:
+- The profile does not contain `redirect-gateway`.
+- A VPN server endpoint is a hostname rather than a numeric IP (strict reconnect must not require physical-interface DNS).
+- The tunnel route is not active.
+- Group Policy manages an outbound allow rule.
+- Windows Firewall profiles are disabled.
+
+Activation stores the previous firewall profile outbound actions and enabled outbound allow rules, then applies default outbound block and adds narrowly scoped VPN-interface, VPN-endpoint and DHCP rules. It also checks that no other enabled outbound allow rules remain. If verification fails, it attempts to roll back.
+
+Use **Restore firewall** or run `Tools\Restore-VpnKillSwitch.ps1` as Administrator to restore the saved firewall settings. Do not delete `%ProgramData%\ClaudeIpGuard\firewall-backup.json` while the kill switch is active.
+
+The kill switch does not modify the OpenVPN profile automatically. Review provider/client guidance for a full-tunnel profile and Windows DNS protection. `block-outside-dns` support depends on the OpenVPN Windows client and driver. A numeric `remote` IP is required for strict reconnect without physical DNS; a provider hostname may change over time, so update the profile and revalidate before enabling the switch again.
+
+## Important limitations
+
+- The VPN exit IP is still visible to Claude and its service providers. IP geolocation is approximate, not GPS.
+- Disabling Windows Location prevents apps relying on that Windows location provider; it does not disable location data already held by websites/accounts.
+- The audit only inspects known local Claude profile locations and known Chromium preference patterns. It cannot inspect Anthropic's server-side account records.
+- The VPN-only kill switch is system-wide by design and can interrupt browsers, email, updates, cloud sync and all other applications whenever VPN is disconnected.
+- Windows Firewall rules are not an atomic transaction. There is a short transition period while default outbound blocking is applied and pre-existing allow rules are disabled. Keep the device connected to power and do not interrupt the activation script.
+- A local administrator or kernel-level malware can change firewall policies or observe the system. No application can defend against every privileged adversary.
+- The original IP-country feature contacts external IP/geolocation providers only after the local preflight confirms the VPN kill switch and a live OpenVPN route. If that preflight fails, it fails closed and does not contact those providers.
 
 ## Build
 
-Requirements: .NET 8 SDK, Inno Setup 6.
+Requirements: Windows 10/11 x64, .NET 8 SDK, Inno Setup 6.
 
 ```powershell
 .\build.ps1
 ```
 
 Output:
-- `publish\` – the self-contained app (no .NET install needed on the target PC)
-- `dist\ClaudeIpGuard-Setup-1.0.0.exe` – the installer (Windows 10/11 x64)
+- `publish\` — self-contained app and required PowerShell tools.
+- `dist\ClaudeIpGuard-Setup-1.0.0.exe` — installer.
 
-The installer adds a Start menu shortcut (optional desktop shortcut) and an uninstaller. Setup and
-uninstall wait until Claude IP Guard has been exited.
-
-## Testing without closing Claude
+## Tests
 
 ```powershell
-ClaudeIpGuard.exe --test-mode --simulate-country US    # pretends you are in the US, closes Notepad
-ClaudeIpGuard.exe --test-mode --simulate-country DE    # pretends you are in Germany
-ClaudeIpGuard.exe --test-mode --simulate-failure       # pretends the lookup fails
-ClaudeIpGuard.exe --test-mode                          # real IP lookup, closes Notepad instead of Claude
+dotnet build ClaudeIpGuard.sln -c Release
+dotnet run --project tests\ClaudeIpGuard.SelfTest -c Release
 ```
 
-Test mode uses its own settings file (`settings.test.json`) and can run next to the real app.
-
-Automated self-test (kill logic against Notepad, live lookup, UI screenshots):
-
-```powershell
-dotnet run --project tests\ClaudeIpGuard.SelfTest -- C:\temp\shots
-```
-
-## Other options
-
-- `--minimized` starts hidden in the tray.
+The GitHub Actions workflow on the privacy-hardening branch parses the PowerShell files, builds on Windows, runs the self-test and produces release artifacts.
 
 ## Project layout
 
 ```
 src/ClaudeIpGuard/
-  Core/          GeoIpService, ProcessGuard, GuardEngine, settings, password hashing
+  Core/          GeoIP guard, privacy audit, VPN preflight, process guard, settings
   Localization/  English and Persian strings
-  UI/            Dashboard window, password dialog, tray icon, theme
-installer/       Inno Setup script
+  UI/            Dashboard, privacy center, settings, tray
+tools/           Privacy audit/remediation/rollback scripts and icon generator
+installer/       Inno Setup installer
 tests/           Self-test harness
-tools/           Icon generator
+.github/         Windows CI build and test workflow
 ```
