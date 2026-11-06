@@ -22,7 +22,7 @@
                     <Image Source="pack://application:,,,/ClaudeIpGuard;component/Assets/app.ico" Width="36" Height="36"/>
                     <StackPanel Margin="12,0,0,0" VerticalAlignment="Center">
                         <TextBlock Text="Claude IP Guard" Foreground="White" FontSize="16" FontWeight="SemiBold"/>
-                        <TextBlock Text="v1.0" Foreground="#94A3B8" FontSize="11"/>
+                        <TextBlock Text="v1.1" Foreground="#94A3B8" FontSize="11"/>
                     </StackPanel>
                 </StackPanel>
 
