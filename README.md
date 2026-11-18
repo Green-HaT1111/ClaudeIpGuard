@@ -18,7 +18,10 @@ European country.
   VPNs), shown in the dashboard's VPN card:
   - *Tunnel mode*: the internet route goes through a non-hardware adapter (Windows' own "hardware" flag).
   - *Proxy mode*: Windows' proxy or `HTTPS_PROXY` points to a program on this PC (e.g. Hiddify `127.0.0.1:12334`).
-  - The VPN program is the one talking to the internet straight from the Wi-Fi/Ethernet address.
+  - The VPN program is the one talking to the internet straight from the Wi-Fi/Ethernet address (TCP).
+    UDP-only VPNs (v2ray with Hysteria2/TUIC/QUIC...) can't be seen that way, because Windows doesn't record
+    where UDP goes: in tunnel mode the known cores among programs with UDP sockets are used instead
+    (xray, v2ray, sing-box, Hiddify, mihomo/Clash, NekoBox, tun2socks, Hysteria, TUIC, Juicity).
 - **Proxy mode, two paths**: the desktop app uses Windows' proxy, Claude Code ignores it (unless
   `HTTPS_PROXY` is set) and goes out directly. The guard then checks both IPs and closes each app only
   when *its* path is outside the allowed countries.

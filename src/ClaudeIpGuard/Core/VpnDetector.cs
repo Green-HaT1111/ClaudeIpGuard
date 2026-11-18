@@ -59,6 +59,13 @@ public static class VpnDetector
             }
         }
 
+        // UDP-based VPNs (v2ray with Hysteria2/TUIC/QUIC...): Windows doesn't record where a UDP socket sends to,
+        // so the TCP check above finds nothing. In tunnel mode, take the known VPN cores among the programs with UDP sockets.
+        if (tunnel != null && programs.Count == 0)
+            foreach (var pid in UdpOwnerPids())
+                if (ProcessGuard.GetImagePath(pid) is string exe && IsKnownVpnCore(Path.GetFileNameWithoutExtension(exe)))
+                    programs.Add(exe);
+
         return new VpnInfo(tunnel, proxy,
             programs.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList(),
             servers.Distinct().OrderBy(x => x, StringComparer.Ordinal).ToList());
@@ -155,6 +162,45 @@ public static class VpnDetector
                  (b[0] == 100 && b[1] >= 64 && b[1] <= 127) || (b[0] == 169 && b[1] == 254) ||
                  (b[0] == 172 && b[1] >= 16 && b[1] <= 31) || (b[0] == 192 && b[1] == 168));
     }
+
+    // v2ray family cores and other tunnel clients that may talk to their server over UDP only.
+    static readonly System.Text.RegularExpressions.Regex KnownVpnCore = new(
+        @"^(xray|v2ray|sing-?box|hiddify.*|mihomo.*|clash.*|nekobox_core|nekoray_core|tun2socks|hysteria.*|tuic.*|juicity.*)$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    public static bool IsKnownVpnCore(string exeName) => KnownVpnCore.IsMatch(exeName);
+
+    /// <summary>Processes that own a UDP socket (IPv4 or IPv6).</summary>
+    static HashSet<int> UdpOwnerPids()
+    {
+        var pids = new HashSet<int>();
+        // MIB_UDPROW_OWNER_PID: 12 bytes, pid at 8. MIB_UDP6ROW_OWNER_PID: 28 bytes, pid at 24.
+        foreach (var (af, rowSize, pidOffset) in new[] { (2, 12, 8), (23, 28, 24) })
+        {
+            int size = 0;
+            GetExtendedUdpTable(IntPtr.Zero, ref size, false, af, 1 /* UDP_TABLE_OWNER_PID */, 0);
+            if (size == 0) continue;
+            var buffer = Marshal.AllocHGlobal(size);
+            try
+            {
+                if (GetExtendedUdpTable(buffer, ref size, false, af, 1, 0) != 0) continue;
+                var count = Marshal.ReadInt32(buffer);
+                for (int i = 0; i < count; i++)
+                {
+                    var pid = Marshal.ReadInt32(buffer + 4 + i * rowSize + pidOffset);
+                    if (pid > 4) pids.Add(pid);
+                }
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+        return pids;
+    }
+
+    [DllImport("iphlpapi.dll")]
+    static extern uint GetExtendedUdpTable(IntPtr table, ref int size, bool order, int af, int tableClass, uint reserved);
 
     // ---------- TCP table (owner process of every connection) ----------
 

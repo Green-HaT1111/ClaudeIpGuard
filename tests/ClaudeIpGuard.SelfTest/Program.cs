@@ -158,6 +158,14 @@ Console.WriteLine($"      self-launch: this self-test was started from inside Cl
     Console.WriteLine($"      VPN here: tunnel={vpn.TunnelAdapter?.Name ?? "-"} proxy={vpn.Proxy ?? "-"} programs={string.Join(", ", vpn.Programs.Select(Path.GetFileName))} servers={vpn.Servers.Count}");
     if (vpn.TunnelAdapter != null) Check(!vpn.TunnelAdapter.Hardware && vpn.Programs.Count > 0, "vpn: tunnel found and its VPN program identified");
 
+    // UDP-only VPNs (v2ray with Hysteria2/TUIC...): known cores are recognized among programs with UDP sockets.
+    Check(new[] { "xray", "v2ray", "sing-box", "HiddifyCli", "mihomo-windows-amd64", "clash-verge", "nekobox_core", "tun2socks", "hysteria2" }.All(VpnDetector.IsKnownVpnCore) &&
+          !new[] { "chrome", "svchost", "msedge", "claude", "OpenVPNConnect", "node" }.Any(VpnDetector.IsKnownVpnCore),
+        "vpn: v2ray-family cores recognized, other programs not");
+    var udp = (HashSet<int>)typeof(VpnDetector).GetMethod("UdpOwnerPids", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.Invoke(null, null)!;
+    var alive = udp.Count(pid => { try { using var p = Process.GetProcessById(pid); return true; } catch { return false; } });
+    Check(udp.Count > 0 && alive >= udp.Count * 9 / 10, $"vpn: UDP table read ({udp.Count} programs with UDP sockets, {alive} running)");
+
     Check(KillSwitch.StructSizes() == (200, 40, 72), $"kill switch: filter structures match Windows (x64) {KillSwitch.StructSizes()}");
     var hw = adapters.Where(a => a.Hardware).ToList();
     var plan = KillSwitch.Plan(new[] { @"C:\VPN\vpn.exe" }, hw);
