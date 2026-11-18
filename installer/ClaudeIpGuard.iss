@@ -49,5 +49,7 @@ Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Fil
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
+; Turn the VPN kill switch off, so uninstalling never leaves the internet blocked.
+Filename: "{app}\{#AppExe}"; Parameters: "--kill-switch off"; RunOnceId: "KillSwitchOff"; Flags: runhidden waituntilterminated
 ; Remove only the permission that setup added.
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\service-permission.ps1"" -Action Revoke"; RunOnceId: "RevokeServicePermission"; Flags: runhidden waituntilterminated

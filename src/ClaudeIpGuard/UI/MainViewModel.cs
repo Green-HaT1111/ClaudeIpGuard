@@ -50,7 +50,7 @@ public sealed class MainViewModel : ObservableObject
 
     string _statusTitle = "", _statusDescription = "", _statusGlyph = "";
     Brush _statusBrush = GreyBrush;
-    string _publicIp = "—", _country = "—", _city = "—", _provider = "—", _lastCheck = "—", _nextCheck = "—";
+    string _vpn = "—", _publicIp = "—", _country = "—", _city = "—", _provider = "—", _lastCheck = "—", _nextCheck = "—";
     string _closedCount = "0", _checkCount = "0", _allowedCount = "0", _pauseButtonText = "";
     string _errorText = "";
     bool _canCheck = true;
@@ -95,6 +95,7 @@ public sealed class MainViewModel : ObservableObject
     public string StatusGlyph { get => _statusGlyph; private set => Set(ref _statusGlyph, value); }
     public Brush StatusBrush { get => _statusBrush; private set => Set(ref _statusBrush, value); }
     public string PublicIp { get => _publicIp; private set => Set(ref _publicIp, value); }
+    public string Vpn { get => _vpn; private set => Set(ref _vpn, value); }
     public string Country { get => _country; private set => Set(ref _country, value); }
     public string City { get => _city; private set => Set(ref _city, value); }
     public string Provider { get => _provider; private set => Set(ref _provider, value); }
@@ -157,6 +158,14 @@ public sealed class MainViewModel : ObservableObject
                 StatusTitle = L["Status_Allowed_Title"];
                 StatusDescription = L.Format("Status_Allowed_Desc", countryLabel);
                 break;
+            case GuardState.Blocked when !e.BlockDesktop:
+                // Proxy mode: the desktop app's path is allowed, Claude Code goes out directly from elsewhere.
+                StatusBrush = RedBrush;
+                StatusGlyph = "";
+                StatusTitle = L["Status_CliBlocked_Title"];
+                StatusDescription = L.Format("Status_CliBlocked_Desc", countryLabel,
+                    e.CliResult != null ? $"{e.CliResult.CountryName} ({e.CliResult.CountryCode})‎" : "?");
+                break;
             case GuardState.Blocked when e.Verdict == Verdict.Unknown:
                 StatusBrush = RedBrush;
                 StatusGlyph = "";
@@ -171,6 +180,13 @@ public sealed class MainViewModel : ObservableObject
                 break;
         }
 
+        Vpn = e.Vpn switch
+        {
+            null => "—",
+            { Active: false } => L["Vpn_None"],
+            var v => string.Join(", ", v.Programs.Select(Path.GetFileNameWithoutExtension).DefaultIfEmpty(L["Vpn_Unknown"])) + " · " +
+                     (v.TunnelAdapter != null && v.Proxy != null ? L["Vpn_TunnelAndProxy"] : v.TunnelAdapter != null ? L["Vpn_Tunnel"] : L.Format("Vpn_Proxy", v.Proxy!)),
+        };
         PublicIp = r?.Ip ?? "—";
         Country = countryLabel;
         City = string.IsNullOrEmpty(r?.City) ? "—" : r!.City!;

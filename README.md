@@ -14,6 +14,14 @@ European country.
 - **Not allowed** → Claude is closed immediately, and closed again every second if it is reopened.
 - **Can't verify** (offline, all services down) → Claude is blocked too (fail-safe, can be turned off).
 - Uses the IP the internet sees. With a VPN, that is the VPN's country.
+- **Any VPN, detected automatically** (OpenVPN, WireGuard, v2ray/Xray, sing-box/Hiddify, Clash, commercial
+  VPNs), shown in the dashboard's VPN card:
+  - *Tunnel mode*: the internet route goes through a non-hardware adapter (Windows' own "hardware" flag).
+  - *Proxy mode*: Windows' proxy or `HTTPS_PROXY` points to a program on this PC (e.g. Hiddify `127.0.0.1:12334`).
+  - The VPN program is the one talking to the internet straight from the Wi-Fi/Ethernet address.
+- **Proxy mode, two paths**: the desktop app uses Windows' proxy, Claude Code ignores it (unless
+  `HTTPS_PROXY` is set) and goes out directly. The guard then checks both IPs and closes each app only
+  when *its* path is outside the allowed countries.
 - **Time zone**: after each check the Windows time zone is set to the one of the IP's location
   (IP in England → `(UTC+00:00) London`), using `tzutil` (no admin needed). Can be turned off in
   Settings. Turn off Windows "Set time zone automatically", or Windows may change it back.
@@ -33,7 +41,8 @@ so the guard doesn't need admin rights for it. Uninstall removes that permission
 - **Dashboard**: status (green allowed / red blocked / amber paused), public IP, country, city,
   lookup service, last/next check, counters. Buttons: Check now, Pause/Resume, Hide to tray.
 - **Activity**: log of checks, location changes and every time Claude was closed.
-- **Leak check**: other ways the real location can be seen besides the IP (see below).
+- **Leak check**: other ways the real location can be seen besides the IP (see below), and the VPN kill switch.
+- **Help**: how protection and the kill switch work, how to turn the kill switch off, and the emergency command.
 - **Browser data**: data saved by your browsers that can show your real location (see below), with a
   button to clear what you tick.
 - **Settings**: interval, which apps to close, fail-safe, time zone sync, allowed countries, change password.
@@ -64,6 +73,24 @@ reads everything, and then shows the confirmation. A remembered country that dif
 IP's country is marked red. Passwords, bookmarks and extensions are never touched. In test mode
 nothing is cleared.
 
+### VPN kill switch
+
+On the Leak check page. Works with any VPN, tunnel or proxy mode. Built on Windows Filtering Platform
+(the engine under Windows Firewall); no firewall setting is changed:
+
+- On Wi-Fi and Ethernet (adapters Windows marks as hardware), new connections are blocked **except** for
+  the VPN program(s) and the local network (private ranges, link-local, multicast, broadcast: router, DNS, DHCP).
+- Traffic through a VPN adapter, or to a local VPN proxy, never uses those adapters, so it keeps working.
+  When the VPN drops, nothing reaches the internet with the real IP. Apps that ignore a VPN's proxy
+  (like Claude Code) are blocked too.
+- Changing VPN server needs nothing (the program is allowed, not an address). Another VPN app: turn the
+  kill switch off, connect the new VPN, turn it on again; earlier programs stay allowed.
+- Connect the VPN first: turning on reads the VPN program from the live connections. Windows asks for admin
+  (the app runs itself elevated with `--kill-switch on|off`). The filters persist across reboots and use
+  fixed IDs, so **Turn off** always removes all of them. Uninstall turns it off too.
+- Emergency (no internet, app won't open), from an administrator Command Prompt:
+  `"C:\Program Files\Claude IP Guard\ClaudeIpGuard.exe" --kill-switch off`
+
 ### Leak check
 
 Runs automatically the first time the page is opened, and again with **Run check**. Read-only:
@@ -71,7 +98,7 @@ it never changes any setting. Each item is marked Leak / Warning / OK / Info.
 
 | Check | What it looks at |
 |---|---|
-| VPN routing and kill switch | Which adapter carries internet traffic, and whether a normal adapter would take over if the VPN drops |
+| VPN routing and kill switch | Which VPN is in use (tunnel/proxy), and whether traffic could leave with the real IP (VPN drop, apps ignoring the proxy) |
 | IPv6 leak | Whether there is a public IPv6 address and whether it is in a different country than the IPv4 address |
 | DNS leak | Which DNS server answers your requests (via `o-o.myaddr.l.google.com`) and its country; EDNS client subnet |
 | Time zone | Windows time zone vs. the time zone of the IP location |

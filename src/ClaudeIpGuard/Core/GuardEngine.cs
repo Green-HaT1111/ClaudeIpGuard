@@ -30,7 +30,8 @@ public sealed class GuardEngine : IDisposable
     DateTime _lastNetworkLog = DateTime.MinValue;
     volatile bool _paused;
     volatile bool _checking;
-    volatile Verdict _verdict = Verdict.None;
+    volatile Verdict _verdict = Verdict.None;     // path the desktop app uses
+    volatile Verdict _cliVerdict = Verdict.None;  // path Claude Code uses (differs only with a proxy)
     int _killCount;
     int _checkCount;
     bool _started;
@@ -48,7 +49,13 @@ public sealed class GuardEngine : IDisposable
         _networkDebounce = new Timer(_ => CheckNow());
     }
 
+    /// <summary>IP and country of the path the desktop app uses.</summary>
     public GeoResult? LastResult { get; private set; }
+    /// <summary>Set when Claude Code takes another path than the desktop app (proxy mode): its own IP/country, or null if unknown.</summary>
+    public GeoResult? CliResult { get; private set; }
+    public bool CliPathDiffers { get; private set; }
+    /// <summary>The VPN found at the last check (tunnel and/or proxy, its program), or null before the first check.</summary>
+    public VpnInfo? Vpn { get; private set; }
     public string? LastError { get; private set; }
     public DateTime? LastCheck { get; private set; }
     public DateTime? NextCheck { get; private set; }
@@ -58,8 +65,11 @@ public sealed class GuardEngine : IDisposable
     public int KillCount => _killCount;
     public int CheckCount => _checkCount;
 
-    public bool ShouldBlock =>
-        _verdict == Verdict.NotAllowed || (_verdict == Verdict.Unknown && _settings().FailSafeBlock);
+    public bool BlockDesktop => Blocks(_verdict);
+    public bool BlockCli => Blocks(CliPathDiffers ? _cliVerdict : _verdict);
+    public bool ShouldBlock => BlockDesktop || BlockCli;
+
+    bool Blocks(Verdict v) => v == Verdict.NotAllowed || (v == Verdict.Unknown && _settings().FailSafeBlock);
 
     public GuardState State =>
         _paused ? GuardState.Paused
@@ -161,35 +171,35 @@ public sealed class GuardEngine : IDisposable
     {
         _checking = true;
         RaiseStateChanged();
-        GeoResult? result = null;
-        string? error = null;
-        Verdict verdict;
-        try
-        {
-            result = await _locator.LocateAsync(ct);
-            var allowed = _settings().AllowedCountries
-                .Any(c => string.Equals(c, result.CountryCode, StringComparison.OrdinalIgnoreCase));
-            verdict = allowed ? Verdict.Allowed : Verdict.NotAllowed;
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            _checking = false;
-            throw;
-        }
-        catch (Exception ex)
-        {
-            error = ex.Message;
-            verdict = Verdict.Unknown;
-        }
+        // With a proxy, the desktop app (Windows' proxy) and Claude Code (HTTPS_PROXY or none) can reach the internet
+        // from different IPs. Check each path that is in use; without a proxy that is one check.
+        var (windowsProxy, envProxy) = _locator.ProxyInUse();
+        var (result, error, verdict) = await CheckPathAsync(direct: !windowsProxy, ct);
+        var cliDiffers = windowsProxy != envProxy;
+        var (cliResult, cliError, cliVerdict) = cliDiffers ? await CheckPathAsync(direct: !envProxy, ct) : (result, error, verdict);
+
+        try { Vpn = VpnDetector.Detect(); }
+        catch (Exception ex) { CrashLog.Write("VPN detection failed", ex); }
 
         var previousVerdict = _verdict;
         var previousIp = LastResult?.Ip;
+        var previousCli = (CliPathDiffers, _cliVerdict, CliResult?.Ip);
         LastResult = result;
-        LastError = error;
+        CliResult = cliResult;
+        CliPathDiffers = cliDiffers;
+        LastError = error ?? cliError;
         LastCheck = DateTime.Now;
         Interlocked.Increment(ref _checkCount);
         _verdict = verdict;
+        _cliVerdict = cliVerdict;
         _checking = false;
+
+        if (cliDiffers && previousCli != (true, cliVerdict, cliResult?.Ip))
+        {
+            if (cliResult == null) Log(ActivityLevel.Warning, "Act_CliPathUnknown", cliError ?? "?");
+            else Log(cliVerdict == Verdict.Allowed ? ActivityLevel.Info : ActivityLevel.Danger,
+                cliVerdict == Verdict.Allowed ? "Act_CliPathAllowed" : "Act_CliPathBlocked", cliResult.CountryName, cliResult.CountryCode, cliResult.Ip);
+        }
 
         if (verdict != previousVerdict || (result != null && result.Ip != previousIp))
         {
@@ -211,6 +221,26 @@ public sealed class GuardEngine : IDisposable
 
         RaiseStateChanged();
         if (!_paused && ShouldBlock) Enforce();
+    }
+
+    async Task<(GeoResult? Result, string? Error, Verdict Verdict)> CheckPathAsync(bool direct, CancellationToken ct)
+    {
+        try
+        {
+            var result = await _locator.LocateAsync(direct, ct);
+            var allowed = _settings().AllowedCountries
+                .Any(c => string.Equals(c, result.CountryCode, StringComparison.OrdinalIgnoreCase));
+            return (result, null, allowed ? Verdict.Allowed : Verdict.NotAllowed);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            _checking = false;
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return (null, ex.Message, Verdict.Unknown);
+        }
     }
 
     /// <summary>Makes the Windows time zone match the IP's location. Repeated outcomes are logged once.</summary>
@@ -267,7 +297,11 @@ public sealed class GuardEngine : IDisposable
         {
             try
             {
-                var reports = _guard.KillTargets(_settings());
+                // Close only what is on a blocked path (with a proxy, the desktop app and Claude Code can differ).
+                var settings = _settings().Clone();
+                settings.KillDesktopApp &= BlockDesktop;
+                settings.KillCli &= BlockCli;
+                var reports = _guard.KillTargets(settings);
                 if (reports.Count == 0) return;
                 Interlocked.Increment(ref _killCount);
                 foreach (var r in reports)

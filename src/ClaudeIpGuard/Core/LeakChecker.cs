@@ -24,10 +24,6 @@ public sealed class LeakChecker : IDisposable
 {
     sealed record IpDetails(string Ip, string CountryCode, string Country, string? Isp, int? UtcOffsetSeconds);
 
-    static readonly Regex VpnAdapter = new(
-        "TAP|TUN|Wintun|WireGuard|OpenVPN|VPN|Tunnel|ZeroTier|Tailscale|NordLynx|WARP|sing-?box|v2ray|Clash|Outline|Psiphon|Hiddify",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
     static readonly Regex ServerIsp = new(
         "server|hosting|data ?cent|datacamp|cloud|vps|dedicated|colocation|digitalocean|ovh|hetzner|amazon|aws|google|microsoft|azure|" +
         "linode|akamai|vultr|choopa|m247|leaseweb|contabo|scaleway|oracle|alibaba|tencent|ionos|hostinger|g-core|gcore|packet|zenlayer|psychz|quadranet",
@@ -76,36 +72,28 @@ public sealed class LeakChecker : IDisposable
 
     LeakCheckResult CheckRouting()
     {
-        var nic = GetInternetInterface();
-        if (nic == null) return R("Leak_Route_Title", CheckStatus.Info, "Leak_Route_Unknown");
-        var label = $"{nic.Name} ({nic.Description})";
+        // Works with any VPN: tunnel mode (a VPN adapter carries the traffic) or proxy mode (Hiddify, v2ray...).
+        var vpn = VpnDetector.Detect();
+        var adapters = VpnDetector.Adapters();
+        var real = VpnDetector.InternetAdapter(adapters) is { Hardware: true } r ? r : adapters.FirstOrDefault(a => a.Hardware && a.IPv4.Count > 0);
+        var realLabel = real != null ? $"{real.Name} ({real.Description})" : "?";
         var killSwitch = KillSwitch.Read();
-        bool Covered(NetworkInterface n) => killSwitch.On && killSwitch.Adapters.Contains(n.Name, StringComparer.OrdinalIgnoreCase);
-        if (!IsVpn(nic))
-            return Covered(nic)
-                ? R("Leak_Route_Title", CheckStatus.Ok, "Leak_Route_KillBlocking", label)
-                : R("Leak_Route_Title", CheckStatus.Warning, "Leak_Route_Direct", label);
+        var vpnName = string.Join(", ", vpn.Programs.Select(Path.GetFileName));
 
-        // VPN carries traffic now. If a normal adapter still has a gateway, traffic falls back to it when the VPN drops.
-        var fallback = NetworkInterface.GetAllNetworkInterfaces().FirstOrDefault(n =>
-            n.OperationalStatus == OperationalStatus.Up && !IsVpn(n) &&
-            n.NetworkInterfaceType != NetworkInterfaceType.Loopback &&
-            n.GetIPProperties().GatewayAddresses.Any(g =>
-                g.Address.AddressFamily == AddressFamily.InterNetwork && !g.Address.Equals(IPAddress.Any)));
-        if (fallback == null) return R("Leak_Route_Title", CheckStatus.Ok, "Leak_Route_Vpn", label);
-        var fallbackLabel = $"{fallback.Name} ({fallback.Description})";
-        if (!Covered(fallback))
-            return R("Leak_Route_Title", CheckStatus.Warning, "Leak_Route_VpnNoKill", label, fallbackLabel);
-        // Kill switch on. A VPN server in the profiles that it doesn't let through could not connect.
-        var missing = KillSwitch.FindVpnServers().Except(killSwitch.Servers).ToList();
-        return missing.Count == 0
-            ? R("Leak_Route_Title", CheckStatus.Ok, "Leak_Route_KillOn", label, fallbackLabel)
-            : R("Leak_Route_Title", CheckStatus.Warning, "Leak_Route_KillMissing", string.Join(", ", missing));
+        if (!vpn.Active)
+            return killSwitch.On
+                ? R("Leak_Route_Title", CheckStatus.Ok, "Leak_Route_KillBlocking", realLabel)
+                : R("Leak_Route_Title", CheckStatus.Warning, "Leak_Route_Direct", realLabel);
+
+        var notAllowed = vpn.Programs.Where(p => !killSwitch.Programs.Contains(p, StringComparer.OrdinalIgnoreCase)).ToList();
+        if (killSwitch.On && notAllowed.Count == 0)
+            return R("Leak_Route_Title", CheckStatus.Ok, "Leak_Route_KillOn", vpnName, realLabel);
+        if (killSwitch.On)
+            return R("Leak_Route_Title", CheckStatus.Warning, "Leak_Route_KillMissing", string.Join(", ", notAllowed.Select(Path.GetFileName)));
+        return vpn.TunnelAdapter != null
+            ? R("Leak_Route_Title", CheckStatus.Warning, "Leak_Route_VpnNoKill", $"{vpn.TunnelAdapter.Name} ({vpn.TunnelAdapter.Description})", realLabel)
+            : R("Leak_Route_Title", CheckStatus.Warning, "Leak_Route_ProxyNoKill", vpn.Proxy ?? "?", vpnName.Length > 0 ? vpnName : "?");
     }
-
-    static bool IsVpn(NetworkInterface n) =>
-        n.NetworkInterfaceType is NetworkInterfaceType.Tunnel or NetworkInterfaceType.Ppp ||
-        VpnAdapter.IsMatch(n.Description) || VpnAdapter.IsMatch(n.Name);
 
     async Task<LeakCheckResult> CheckIpv6Async(IpDetails? v4, CancellationToken ct)
     {
@@ -215,12 +203,13 @@ public sealed class LeakChecker : IDisposable
 
     static LeakCheckResult CheckProxy()
     {
-        const string key = @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
-        var enabled = Registry.GetValue(key, "ProxyEnable", 0) is int i && i == 1;
-        var server = Registry.GetValue(key, "ProxyServer", null) as string;
-        return enabled
-            ? R("Leak_Proxy_Title", CheckStatus.Warning, "Leak_Proxy_On", server ?? "?")
-            : R("Leak_Proxy_Title", CheckStatus.Ok, "Leak_Proxy_Off");
+        var proxy = VpnDetector.WindowsProxy();
+        if (proxy == null) return R("Leak_Proxy_Title", CheckStatus.Ok, "Leak_Proxy_Off");
+        // A proxy served by a VPN program on this PC is the VPN's proxy mode (Hiddify, v2rayN...), not an outside proxy.
+        var vpn = VpnDetector.Detect();
+        return vpn.Proxy == proxy && vpn.Programs.Count > 0
+            ? R("Leak_Proxy_Title", CheckStatus.Info, "Leak_Proxy_Vpn", proxy, string.Join(", ", vpn.Programs.Select(Path.GetFileName)))
+            : R("Leak_Proxy_Title", CheckStatus.Warning, "Leak_Proxy_On", proxy);
     }
 
     // ---- helpers ----
@@ -252,21 +241,6 @@ public sealed class LeakChecker : IDisposable
         }
     }
 
-    static NetworkInterface? GetInternetInterface()
-    {
-        var dest = BitConverter.ToUInt32(IPAddress.Parse("8.8.8.8").GetAddressBytes(), 0);
-        if (GetBestInterface(dest, out var index) != 0) return null;
-        foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
-        {
-            try
-            {
-                if (nic.GetIPProperties().GetIPv4Properties()?.Index == (int)index) return nic;
-            }
-            catch (NetworkInformationException) { }
-        }
-        return null;
-    }
-
     static string Label(IpDetails d) => $"{d.Country} ({d.CountryCode})‎";
 
     static string Offset(TimeSpan t) => (t < TimeSpan.Zero ? "-" : "+") + t.ToString(@"hh\:mm");
@@ -288,9 +262,6 @@ public sealed class LeakChecker : IDisposable
     }
 
     public void Dispose() => _http.Dispose();
-
-    [DllImport("iphlpapi.dll")]
-    static extern int GetBestInterface(uint destAddr, out uint bestIfIndex);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     static extern int GetUserDefaultGeoName(StringBuilder geoName, int geoNameCount);

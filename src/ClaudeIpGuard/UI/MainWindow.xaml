@@ -71,6 +71,12 @@
                             <TextBlock Text="{loc:T Nav_Settings}"/>
                         </StackPanel>
                     </RadioButton>
+                    <RadioButton x:Name="NavHelp" x:FieldModifier="public" Style="{StaticResource NavButton}" Tag="help" Checked="Nav_Checked">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE897;" Width="28" VerticalAlignment="Center"/>
+                            <TextBlock Text="{loc:T Nav_Help}"/>
+                        </StackPanel>
+                    </RadioButton>
                 </StackPanel>
             </DockPanel>
         </Border>
@@ -174,6 +180,13 @@
                                 </StackPanel>
                             </Border>
                         </UniformGrid>
+
+                        <Border Style="{StaticResource Card}" Margin="0,0,0,12">
+                            <StackPanel>
+                                <TextBlock Text="{loc:T Info_Vpn}" Style="{StaticResource Label}"/>
+                                <TextBlock Text="{Binding Vpn}" Style="{StaticResource Value}" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
 
                         <UniformGrid Columns="3" Margin="0,0,-12,0">
                             <Border Style="{StaticResource Card}" Margin="0,0,12,12">
@@ -424,6 +437,61 @@
                         </StackPanel>
                     </ScrollViewer>
                 </Grid>
+
+                <!-- Help page -->
+                <ScrollViewer x:Name="PageHelp" x:FieldModifier="public" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+                    <StackPanel MaxWidth="820" HorizontalAlignment="Stretch">
+                        <StackPanel.Resources>
+                            <Style x:Key="HelpBody" TargetType="TextBlock">
+                                <Setter Property="TextWrapping" Value="Wrap"/>
+                                <Setter Property="FontSize" Value="13.5"/>
+                                <Setter Property="LineHeight" Value="21"/>
+                                <Setter Property="Foreground" Value="#334155"/>
+                            </Style>
+                        </StackPanel.Resources>
+                        <TextBlock Text="{loc:T Help_Title}" Style="{StaticResource H1}"/>
+                        <TextBlock Text="{loc:T Help_Subtitle}" Style="{StaticResource Sub}" Margin="0,4,0,20" TextWrapping="Wrap"/>
+
+                        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
+                            <StackPanel>
+                                <TextBlock Text="{loc:T Help_Guard_Title}" Style="{StaticResource SectionTitle}"/>
+                                <TextBlock Text="{loc:T Help_Guard_Body}" Style="{StaticResource HelpBody}"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
+                            <StackPanel>
+                                <TextBlock Text="{loc:T Help_Vpn_Title}" Style="{StaticResource SectionTitle}"/>
+                                <TextBlock Text="{loc:T Help_Vpn_Body}" Style="{StaticResource HelpBody}"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
+                            <StackPanel>
+                                <TextBlock Text="{loc:T Help_KillOn_Title}" Style="{StaticResource SectionTitle}"/>
+                                <TextBlock Text="{loc:T Help_KillOn_Body}" Style="{StaticResource HelpBody}"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
+                            <StackPanel>
+                                <TextBlock Text="{loc:T Help_KillOff_Title}" Style="{StaticResource SectionTitle}"/>
+                                <TextBlock Text="{loc:T Help_KillOff_Body}" Style="{StaticResource HelpBody}"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
+                            <StackPanel>
+                                <TextBlock Text="{loc:T Help_Switch_Title}" Style="{StaticResource SectionTitle}"/>
+                                <TextBlock Text="{loc:T Help_Switch_Body}" Style="{StaticResource HelpBody}"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}" Margin="0,0,0,14" BorderBrush="#FCA5A5">
+                            <StackPanel>
+                                <TextBlock Text="{loc:T Help_Emergency_Title}" Style="{StaticResource SectionTitle}" Foreground="{StaticResource DangerBrush}"/>
+                                <TextBlock Text="{loc:T Help_Emergency_Body}" Style="{StaticResource HelpBody}"/>
+                                <TextBox Text="&quot;C:\Program Files\Claude IP Guard\ClaudeIpGuard.exe&quot; --kill-switch off" IsReadOnly="True"
+                                         FontFamily="Consolas" FontSize="13" Margin="0,8,0,0" Padding="8,6" FlowDirection="LeftToRight"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
 
                 <!-- Settings page -->
                 <ScrollViewer x:Name="PageSettings" x:FieldModifier="public" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">

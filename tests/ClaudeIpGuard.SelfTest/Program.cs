@@ -140,48 +140,35 @@ Check(!SelfLaunch.IsClaude("explorer.exe", @"C:\Windows\explorer.exe") && !SelfL
     "self-launch: Explorer and the guard itself are not");
 Console.WriteLine($"      self-launch: this self-test was started from inside Claude: {SelfLaunch.StartedByClaude()}");
 
-// Kill switch: what the firewall rules would block (nothing is changed here)
+// VPN detection (any VPN) and the kill switch filter plan (nothing is changed here)
 {
-    // Example VPN servers from the documentation address ranges (RFC 5737), not real servers.
-    var vpnA = "198.51.100.10";
-    var vpnB = "203.0.113.20";
-    var ranges = KillSwitch.PublicRangesExcept(new[] { vpnA, vpnB }).Split(',');
-    bool Blocked(string ip)
-    {
-        var b = System.Net.IPAddress.Parse(ip).GetAddressBytes();
-        uint v = (uint)(b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]);
-        return ranges.Any(r =>
-        {
-            var p = r.Split('-').Select(x => System.Net.IPAddress.Parse(x).GetAddressBytes()).Select(x => (uint)(x[0] << 24 | x[1] << 16 | x[2] << 8 | x[3])).ToArray();
-            return v >= p[0] && v <= p[1];
-        });
-    }
-    Check(!Blocked(vpnA) && !Blocked(vpnB), "kill switch: both VPN servers allowed");
-    Check(Blocked("198.51.100.9") && Blocked("198.51.100.11") && Blocked("1.1.1.1") && Blocked("8.8.8.8") && Blocked("192.0.2.30"),
-        "kill switch: the rest of the internet blocked (1.1.1.1, 8.8.8.8, neighbours of the VPN server)");
-    Check(!Blocked("192.168.1.1") && !Blocked("10.0.0.5") && !Blocked("172.16.3.3") && !Blocked("169.254.1.1") && !Blocked("224.0.0.251") && !Blocked("255.255.255.255"),
-        "kill switch: local network, router, DHCP and multicast stay open");
+    Check(VpnDetector.ParseProxy("http://127.0.0.1:12334") == "127.0.0.1:12334", "vpn: proxy \"http://127.0.0.1:12334\" read");
+    Check(VpnDetector.ParseProxy("http=127.0.0.1:8080;https=127.0.0.1:8443") == "127.0.0.1:8443", "vpn: per-protocol proxy -> the https one");
+    Check(VpnDetector.ParseProxy("127.0.0.1:10808") == "127.0.0.1:10808" && VpnDetector.ParseProxy("") == null, "vpn: plain host:port read, empty ignored");
+    Check(VpnDetector.IsPublic(System.Net.IPAddress.Parse("198.51.100.10")) && !VpnDetector.IsPublic(System.Net.IPAddress.Parse("192.168.1.1")) &&
+          !VpnDetector.IsPublic(System.Net.IPAddress.Parse("10.8.0.1")) && !VpnDetector.IsPublic(System.Net.IPAddress.Parse("127.0.0.1")),
+        "vpn: public vs local addresses");
 
-    var profiles = Path.Combine(tempData, "ovpn");
-    Directory.CreateDirectory(profiles);
-    File.WriteAllText(Path.Combine(profiles, "a.ovpn"), $"client\nremote {vpnA} 443 tcp\nremote-cert-tls server\n");
-    File.WriteAllText(Path.Combine(profiles, "b.ovpn"), $"client\n  remote {vpnB} 443\n");
-    Check(KillSwitch.FindVpnServers(new[] { profiles }).SequenceEqual(new[] { vpnA, vpnB }),
-        "kill switch: VPN servers read from .ovpn profiles (remote-cert-tls ignored)");
+    // Windows' own "hardware" flag decides what gets blocked, never adapter names.
+    var adapters = VpnDetector.Adapters();
+    var vpnLike = new System.Text.RegularExpressions.Regex("TAP|TUN|Wintun|WireGuard|OpenVPN|VPN|Wi-Fi Direct", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    Console.WriteLine($"      adapters here: {string.Join("; ", adapters.Select(a => $"{a.Name}={(a.Hardware ? "hardware" : "virtual")}"))}");
+    Check(adapters.Where(a => a.Hardware).All(a => !vpnLike.IsMatch(a.Description)), "vpn: no VPN/virtual adapter counts as hardware");
+    var vpn = VpnDetector.Detect();
+    Console.WriteLine($"      VPN here: tunnel={vpn.TunnelAdapter?.Name ?? "-"} proxy={vpn.Proxy ?? "-"} programs={string.Join(", ", vpn.Programs.Select(Path.GetFileName))} servers={vpn.Servers.Count}");
+    if (vpn.TunnelAdapter != null) Check(!vpn.TunnelAdapter.Hardware && vpn.Programs.Count > 0, "vpn: tunnel found and its VPN program identified");
 
-    // Never block a VPN adapter (that would cut the VPN itself).
-    var adapters = KillSwitch.PhysicalAdapters();
-    var vpnLike = new System.Text.RegularExpressions.Regex("TAP|TUN|Wintun|WireGuard|OpenVPN|VPN", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-    var blocksVpn = System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
-        .Any(n => adapters.Contains(n.Name) && vpnLike.IsMatch(n.Description));
-    Console.WriteLine($"      kill switch adapters here: {string.Join(", ", adapters)}");
-    Check(!blocksVpn, "kill switch: never blocks a VPN adapter");
+    Check(KillSwitch.StructSizes() == (200, 40, 72), $"kill switch: filter structures match Windows (x64) {KillSwitch.StructSizes()}");
+    var hw = adapters.Where(a => a.Hardware).ToList();
+    var plan = KillSwitch.Plan(new[] { @"C:\VPN\vpn.exe" }, hw);
+    Check(plan.Count == 6 && plan.Count(p => !p.Permit) == 2 && plan.All(p => p.Permit ? p.Weight > 1 : p.Weight == 1),
+        "kill switch: per IP version 1 block + 2 allow filters, allows win over the block");
+    Check(plan.Where(p => !p.Permit).All(p => p.Kind == "adapters" && p.Values.SequenceEqual(hw.Select(a => a.Name))),
+        "kill switch: blocks only hardware adapters (Wi-Fi/Ethernet), never a VPN adapter");
+    Check(plan.Any(p => p.Kind == "programs" && p.Values.Contains(@"C:\VPN\vpn.exe")) &&
+          plan.Any(p => p.Kind == "lan" && !p.IPv6 && p.Values.Contains("192.168.0.0/16") && p.Values.Contains("255.255.255.255/32")),
+        "kill switch: VPN program and local network (router, DNS, DHCP) allowed");
     Console.WriteLine($"      kill switch now: {(KillSwitch.Read().On ? "on" : "off")}");
-
-    var buildError = KillSwitch.TryBuildRules(new[] { vpnA, vpnB }, adapters.Count > 0 ? adapters : new List<string> { "Wi-Fi" });
-    Check(buildError == null, "kill switch: Windows accepts both firewall rules (built, not added)" + (buildError != null ? ": " + buildError : ""));
-    Check(!KillSwitch.Description(new[] { vpnA, vpnB }, adapters).Contains('|'),
-        "kill switch: rule description has no '|' (Windows refuses it when adding the rule)");
 }
 
 // Time zone: IP location -> Windows time zone (dry run, the real time zone is not changed here)
@@ -330,14 +317,14 @@ using (var geo = new GeoIpService())
 {
     try
     {
-        var r = await geo.LocateAsync(CancellationToken.None);
+        var r = await geo.LocateAsync(false, CancellationToken.None);
         Console.WriteLine($"      live result: {r.Ip} -> {r.CountryName} ({r.CountryCode}), {r.City}, via {r.Provider}");
         Check(r.CountryCode.Length == 2, "live IP + country lookup");
         var liveTz = TimeZoneSync.ToWindowsId(r.TimeZone);
         Console.WriteLine($"      live time zone: {r.TimeZone ?? "(none)"} -> {liveTz ?? "(none)"}; Windows now: {TimeZoneInfo.Local.Id}");
         Check(liveTz != null, "live lookup gives a time zone Windows knows");
         var sw = Stopwatch.StartNew();
-        await geo.LocateAsync(CancellationToken.None);
+        await geo.LocateAsync(false, CancellationToken.None);
         Console.WriteLine($"      second (cached country) lookup took {sw.ElapsedMilliseconds} ms");
     }
     catch (Exception ex)
@@ -404,6 +391,20 @@ Check(engine.KillCount >= 4, $"kill counter = {engine.KillCount}");
 Check(log.Any(l => l.StartsWith("Time zone set") && l.Contains("Paris") && l.Contains("France")), "engine: France IP -> Paris time zone");
 Check(log.Any(l => l.StartsWith("Time zone set") && l.Contains("Eastern Time")), "engine: USA IP -> US Eastern time zone");
 Check(log.Any(l => l.StartsWith("Time zone set") && l.Contains("Berlin")), "engine: Germany IP -> Berlin time zone");
+
+// Proxy mode: desktop app through the proxy (Germany, allowed), Claude Code goes out directly (Iran, not allowed).
+locator.Fail = false;
+locator.Country = "DE";
+locator.DirectCountry = "IR";
+engine.CheckNow();
+await Task.Delay(1500);
+Check(!engine.BlockDesktop && engine.BlockCli && engine.State == GuardState.Blocked,
+    "proxy mode: desktop app allowed (proxy in Germany), Claude Code blocked (direct from Iran)");
+Check(log.Any(l => l.StartsWith("Claude Code ignores the proxy") && l.Contains("Iran")), "proxy mode: Claude Code's direct path logged");
+locator.DirectCountry = null;
+engine.CheckNow();
+await Task.Delay(1500);
+Check(!engine.ShouldBlock && !engine.CliPathDiffers, "no proxy: one path again, allowed");
 engine.Dispose();
 KillNotepads();
 Console.WriteLine("      activity log:");

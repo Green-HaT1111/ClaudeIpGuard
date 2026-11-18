@@ -1,251 +1,160 @@
 using System.Diagnostics;
 using System.Net;
-using System.Net.NetworkInformation;
-using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Text;
-using System.Text.RegularExpressions;
+using System.Text.Json;
 
 namespace ClaudeIpGuard.Core;
 
-/// <param name="On">Both firewall rules exist and are enabled.</param>
-/// <param name="Servers">VPN server IPs the rules let through.</param>
-/// <param name="Adapters">Network adapters the rules block.</param>
-public sealed record KillSwitchState(bool On, IReadOnlyList<string> Servers, IReadOnlyList<string> Adapters);
+/// <param name="On">The filters were added (state file present).</param>
+/// <param name="Programs">VPN programs allowed through the real adapters.</param>
+/// <param name="Adapters">Real adapters (Wi-Fi, Ethernet) that are blocked for everything else.</param>
+public sealed record KillSwitchState(bool On, IReadOnlyList<string> Programs, IReadOnlyList<string> Adapters);
+
+/// <summary>One filter the kill switch adds (kept separate so tests can check it without admin rights).</summary>
+public sealed record PlannedFilter(bool IPv6, bool Permit, byte Weight, string Kind, IReadOnlyList<string> Values);
 
 /// <summary>
-/// VPN kill switch with Windows Firewall. Two outbound block rules on the physical adapters (Wi-Fi, Ethernet):
-/// every public internet address is blocked except the VPN servers. The local network and everything that goes
-/// through the VPN adapter keep working. So when the VPN drops, nothing reaches the internet with the real IP.
-/// Changing the firewall needs admin rights: the app runs itself elevated with --kill-switch (see App).
+/// VPN kill switch that works with any VPN (tunnel or proxy mode). It uses Windows Filtering Platform, the engine under
+/// Windows Firewall, without changing any firewall setting:
+///   block new connections on the real adapters (Wi-Fi, Ethernet)
+///   except the VPN programs and the local network (router, DNS, DHCP).
+/// Traffic that goes through a VPN adapter or to a local proxy never uses a real adapter, so it is not affected.
+/// So when the VPN drops, nothing reaches the internet with the real IP, whatever the VPN server is.
+/// The filters are persistent (survive a reboot) and have fixed IDs, so "off" always removes all of them.
+/// Adding/removing needs admin: the app runs itself elevated with --kill-switch (see App).
 /// </summary>
 public static class KillSwitch
 {
-    public const string RuleV4 = "Claude IP Guard kill switch (IPv4)";
-    public const string RuleV6 = "Claude IP Guard kill switch (IPv6)";
-    const string Group = "Claude IP Guard";
-    const string ServersTag = "servers=";
-    const string AdaptersTag = "adapters=";
+    static readonly Guid SubLayerKey = new("6c3f8a2e-4b1d-4e7a-9a52-1f0d7c3b9e00");
+    static Guid FilterKey(int i) => new($"6c3f8a2e-4b1d-4e7a-9a52-1f0d7c3b9e{i + 1:x2}");
+    const int FilterCount = 6; // 3 per IP version
 
-    static readonly Regex VirtualAdapter = new(
-        "TAP|TUN|Wintun|WireGuard|OpenVPN|VPN|Tunnel|ZeroTier|Tailscale|NordLynx|WARP|sing-?box|v2ray|Clash|Outline|Psiphon|Hiddify|" +
-        "Hyper-V|vEthernet|VirtualBox|VMware|Loopback|Bluetooth|Npcap|Teredo|isatap|Kernel Debug|Wi-Fi Direct",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    static readonly Guid LayerConnectV4 = new("c38d57d1-05a7-4c33-904f-7fbceee60e82");
+    static readonly Guid LayerConnectV6 = new("4a72393b-319f-44bc-84c3-ba54dcb3b6b4");
+    static readonly Guid CondLocalInterface = new("4cd62a49-59c3-4969-b7f3-bda5d32890a4");
+    static readonly Guid CondAppId = new("d78e1e87-8644-4ea5-9437-d809ecefc971");
+    static readonly Guid CondRemoteAddress = new("b235ae9a-1d64-49b8-a44c-5ff3d9095045");
 
-    static readonly Regex RemoteLine = new(@"^\s*remote\s+(?<host>\S+)", RegexOptions.Multiline | RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    // Local network, never blocked: private ranges, link-local, CGNAT, multicast, broadcast.
+    static readonly string[] LanV4 = { "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10", "224.0.0.0/4", "255.255.255.255/32" };
+    static readonly string[] LanV6 = { "fe80::/10", "fc00::/7", "ff00::/8" };
 
-    // ---------- what to allow / block ----------
+    static string StateFile => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ClaudeIpGuard", "killswitch.json");
 
-    /// <summary>VPN servers from OpenVPN Connect and OpenVPN GUI profiles ("remote host port"). Host names are resolved.</summary>
-    public static List<string> FindVpnServers(IEnumerable<string>? profileFolders = null)
-    {
-        profileFolders ??= new[]
-        {
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "OpenVPN Connect", "profiles"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "OpenVPN", "config"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "OpenVPN", "config"),
-        };
-        var servers = new List<string>();
-        foreach (var folder in profileFolders.Where(Directory.Exists))
-            foreach (var file in Directory.EnumerateFiles(folder, "*.ovpn", SearchOption.AllDirectories))
-            {
-                string text;
-                try { text = File.ReadAllText(file); }
-                catch { continue; }
-                foreach (Match m in RemoteLine.Matches(text))
-                {
-                    var host = m.Groups["host"].Value;
-                    if (IPAddress.TryParse(host, out var ip))
-                    {
-                        if (ip.AddressFamily == AddressFamily.InterNetwork) servers.Add(ip.ToString());
-                        continue;
-                    }
-                    try
-                    {
-                        servers.AddRange(Dns.GetHostAddresses(host)
-                            .Where(a => a.AddressFamily == AddressFamily.InterNetwork).Select(a => a.ToString()));
-                    }
-                    catch (Exception ex)
-                    {
-                        CrashLog.Write($"Kill switch: could not resolve VPN server {host}", ex);
-                    }
-                }
-            }
-        return servers.Distinct().OrderBy(s => s, StringComparer.Ordinal).ToList();
-    }
+    sealed record StateData(List<string> Programs, List<string> Adapters);
 
-    /// <summary>Real network adapters (Wi-Fi, Ethernet), connected or not. VPN and virtual adapters are left out.</summary>
-    public static List<string> PhysicalAdapters() =>
-        NetworkInterface.GetAllNetworkInterfaces()
-            .Where(n => n.NetworkInterfaceType is NetworkInterfaceType.Wireless80211 or NetworkInterfaceType.Ethernet
-                        or NetworkInterfaceType.GigabitEthernet or NetworkInterfaceType.FastEthernetT or NetworkInterfaceType.FastEthernetFx
-                     && !VirtualAdapter.IsMatch(n.Description) && !VirtualAdapter.IsMatch(n.Name))
-            .Select(n => n.Name)
-            .Distinct()
-            .OrderBy(n => n, StringComparer.Ordinal)
-            .ToList();
-
-    // Never blocked: this-network, private networks (LAN, router, DNS), CGNAT, loopback, link-local, multicast, reserved.
-    static readonly (string Start, string End)[] NotInternet =
-    {
-        ("0.0.0.0", "0.255.255.255"), ("10.0.0.0", "10.255.255.255"), ("100.64.0.0", "100.127.255.255"),
-        ("127.0.0.0", "127.255.255.255"), ("169.254.0.0", "169.254.255.255"), ("172.16.0.0", "172.31.255.255"),
-        ("192.168.0.0", "192.168.255.255"), ("224.0.0.0", "255.255.255.255"),
-    };
-
-    /// <summary>All public IPv4 ranges minus the VPN servers, in firewall format: "1.0.0.0-9.255.255.255,11.0.0.0-...".</summary>
-    public static string PublicRangesExcept(IEnumerable<string> servers)
-    {
-        var holes = NotInternet.Select(r => (Start: ToUInt(r.Start), End: ToUInt(r.End)))
-            .Concat(servers.Select(s => ToUInt(s)).Select(v => (Start: v, End: v)))
-            .OrderBy(h => h.Start)
-            .ToList();
-        var ranges = new List<string>();
-        ulong next = 0;
-        foreach (var (start, end) in holes)
-        {
-            if (start > next) ranges.Add($"{ToIp((uint)next)}-{ToIp(start - 1)}");
-            next = Math.Max(next, (ulong)end + 1);
-        }
-        if (next <= uint.MaxValue) ranges.Add($"{ToIp((uint)next)}-{ToIp(uint.MaxValue)}");
-        return string.Join(",", ranges);
-    }
-
-    static uint ToUInt(string ip)
-    {
-        var b = IPAddress.Parse(ip).GetAddressBytes();
-        return (uint)(b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]);
-    }
-
-    static string ToIp(uint v) => $"{v >> 24}.{(v >> 16) & 255}.{(v >> 8) & 255}.{v & 255}";
-
-    // ---------- firewall (COM: HNetCfg.FwPolicy2, works without PowerShell) ----------
-
-    static dynamic Policy() => Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FwPolicy2", true)!)!;
-
-    static dynamic? FindRule(dynamic policy, string name)
-    {
-        foreach (dynamic r in policy.Rules)
-            if ((string)r.Name == name) return r;
-        return null;
-    }
-
-    /// <summary>Reads the rules (no admin needed).</summary>
+    /// <summary>Reads the state (no admin needed).</summary>
     public static KillSwitchState Read()
     {
         try
         {
-            var policy = Policy();
-            var v4 = FindRule(policy, RuleV4);
-            var v6 = FindRule(policy, RuleV6);
-            if (v4 == null) return new KillSwitchState(false, Array.Empty<string>(), Array.Empty<string>());
-            var description = (string)(v4.Description ?? "");
-            var on = (bool)v4.Enabled && v6 != null && (bool)v6!.Enabled;
-            return new KillSwitchState(on, Tagged(description, ServersTag), Tagged(description, AdaptersTag));
+            if (!File.Exists(StateFile)) return new KillSwitchState(false, Array.Empty<string>(), Array.Empty<string>());
+            var s = JsonSerializer.Deserialize<StateData>(File.ReadAllText(StateFile))!;
+            return new KillSwitchState(true, s.Programs, s.Adapters);
         }
         catch (Exception ex)
         {
-            CrashLog.Write("Kill switch: could not read firewall rules", ex);
+            CrashLog.Write("Kill switch: could not read its state", ex);
             return new KillSwitchState(false, Array.Empty<string>(), Array.Empty<string>());
         }
     }
 
-    static IReadOnlyList<string> Tagged(string description, string tag)
+    /// <summary>The filters for these VPN programs and real adapters (adapter names are shown, LUIDs are used).</summary>
+    public static List<PlannedFilter> Plan(IReadOnlyList<string> programs, IReadOnlyList<NetAdapter> adapters)
     {
-        var line = description.Split('\n').FirstOrDefault(l => l.StartsWith(tag, StringComparison.Ordinal));
-        return line == null ? Array.Empty<string>() : line[tag.Length..].Trim().Split(';', StringSplitOptions.RemoveEmptyEntries);
+        var list = new List<PlannedFilter>();
+        foreach (var v6 in new[] { false, true })
+        {
+            list.Add(new PlannedFilter(v6, false, 1, "adapters", adapters.Select(a => a.Name).ToList()));
+            list.Add(new PlannedFilter(v6, true, 10, "programs", programs.ToList()));
+            list.Add(new PlannedFilter(v6, true, 10, "lan", v6 ? LanV6 : LanV4));
+        }
+        return list;
     }
 
-    /// <summary>Creates (or replaces) the two block rules. Needs admin.</summary>
-    public static void Apply(IReadOnlyList<string> servers, IReadOnlyList<string> adapters)
+    /// <summary>Adds (or replaces) the filters. Needs admin. All or nothing: one transaction.</summary>
+    public static void Apply(IReadOnlyList<string> programs)
     {
-        if (servers.Count == 0) throw new InvalidOperationException("No VPN server to allow.");
-        if (adapters.Count == 0) throw new InvalidOperationException("No network adapter to block.");
-        if (adapters.Any(a => a.Contains('|') || a.Contains(';')))
-            throw new InvalidOperationException("An adapter name contains | or ;");
-        var policy = Policy();
-        RemoveRules(policy);
-        var description = Description(servers, adapters);
+        if (programs.Count == 0) throw new InvalidOperationException("No VPN program to allow. Connect the VPN first.");
+        var missing = programs.Where(p => !File.Exists(p)).ToList();
+        if (missing.Count > 0) throw new InvalidOperationException("VPN program not found: " + string.Join(", ", missing));
+        var adapters = VpnDetector.Adapters().Where(a => a.Hardware).ToList();
+        if (adapters.Count == 0) throw new InvalidOperationException("No Wi-Fi or Ethernet adapter found.");
+
+        using var engine = Engine.Open();
+        engine.Begin();
         try
         {
-            AddRule(policy, RuleV4, description, PublicRangesExcept(servers), adapters);
-            AddRule(policy, RuleV6, description, "2000::/3", adapters); // global IPv6 internet
+            RemoveAll(engine);
+            engine.AddSubLayer(SubLayerKey, "Claude IP Guard kill switch");
+            var plan = Plan(programs, adapters);
+            for (int i = 0; i < plan.Count; i++)
+            {
+                var f = plan[i];
+                var conditions = f.Kind switch
+                {
+                    "adapters" => adapters.Select(a => Condition.Luid(CondLocalInterface, a.Luid)).ToList(),
+                    "programs" => programs.Select(p => Condition.AppId(CondAppId, p)).ToList(),
+                    _ => f.Values.Select(r => Condition.Address(CondRemoteAddress, r)).ToList(),
+                };
+                try
+                {
+                    engine.AddFilter(FilterKey(i), f.IPv6 ? LayerConnectV6 : LayerConnectV4, f.Permit, f.Weight,
+                        $"Claude IP Guard kill switch ({(f.Permit ? "allow" : "block")} {f.Kind}, IPv{(f.IPv6 ? 6 : 4)})", conditions);
+                }
+                finally
+                {
+                    foreach (var c in conditions) c.Dispose();
+                }
+            }
+            engine.Commit();
         }
         catch
         {
-            RemoveRules(policy); // never leave half a kill switch behind
+            engine.Abort(); // nothing is left half done
             throw;
         }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(StateFile)!);
+        File.WriteAllText(StateFile, JsonSerializer.Serialize(new StateData(programs.ToList(), adapters.Select(a => a.Name).ToList())));
     }
 
-    /// <summary>The rule description; it also stores which servers and adapters the rules were made for.</summary>
-    /// <remarks>Windows refuses a rule whose name or description contains "|", so the lists use ";".</remarks>
-    public static string Description(IReadOnlyList<string> servers, IReadOnlyList<string> adapters) =>
-        "Blocks the internet outside the VPN. Added by Claude IP Guard, turn it off in its Leak check page.\n" +
-        ServersTag + string.Join(";", servers) + "\n" + AdaptersTag + string.Join(";", adapters);
-
-    static void AddRule(dynamic policy, string name, string description, string remote, IReadOnlyList<string> adapters)
+    /// <summary>Removes every filter of the kill switch. Needs admin.</summary>
+    public static void Remove()
     {
-        var rule = BuildRule(name, description, remote, adapters);
-        try { policy.Rules.Add(rule); }
-        catch (Exception ex) { throw new InvalidOperationException($"Windows Firewall refused rule \"{name}\": {ex.Message}", ex); }
-    }
-    /// <summary>Fills in a firewall rule object (does not add it to the firewall). Each failing value is named in the error.</summary>
-    public static object BuildRule(string name, string description, string remote, IReadOnlyList<string> adapters)
-    {
-        dynamic rule = Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FWRule", true)!)!;
-        void Set(string property, Action set)
-        {
-            try { set(); }
-            catch (Exception ex) { throw new InvalidOperationException($"Firewall rule {property}: {ex.Message}", ex); }
-        }
-        Set("Name", () => rule.Name = name);
-        Set("Description", () => rule.Description = description);
-        Set("Grouping", () => rule.Grouping = Group);
-        Set("Protocol", () => rule.Protocol = 256);            // any
-        Set("Direction", () => rule.Direction = 2);            // outbound
-        Set("Action", () => rule.Action = 0);                  // block
-        Set("Profiles", () => rule.Profiles = 0x7FFFFFFF);     // domain, private, public
-        Set("RemoteAddresses", () => rule.RemoteAddresses = remote);
-        Set("Interfaces", () => rule.Interfaces = adapters.Cast<object>().ToArray());
-        Set("Enabled", () => rule.Enabled = true);
-        return rule;
-    }
-
-    /// <summary>Builds both rules without adding them, to check the values Windows will accept. Returns null or the error.</summary>
-    public static string? TryBuildRules(IReadOnlyList<string> servers, IReadOnlyList<string> adapters)
-    {
+        using var engine = Engine.Open();
+        engine.Begin();
         try
         {
-            BuildRule(RuleV4, "test", PublicRangesExcept(servers), adapters);
-            BuildRule(RuleV6, "test", "2000::/3", adapters);
-            return null;
+            RemoveAll(engine);
+            engine.Commit();
         }
-        catch (Exception ex)
+        catch
         {
-            return ex.Message;
+            engine.Abort();
+            throw;
         }
+        File.Delete(StateFile);
     }
 
-    /// <summary>Removes the rules. Needs admin.</summary>
-    public static void Remove() => RemoveRules(Policy());
-
-    static void RemoveRules(dynamic policy)
+    static void RemoveAll(Engine engine)
     {
-        foreach (var name in new[] { RuleV4, RuleV6 })
-            while (FindRule(policy, name) != null) policy.Rules.Remove(name);
+        for (int i = 0; i < FilterCount; i++) engine.DeleteFilter(FilterKey(i));
+        engine.DeleteSubLayer(SubLayerKey);
     }
 
     // ---------- run elevated ----------
 
     /// <summary>
     /// Starts this app as admin (Windows asks) to turn the kill switch on or off. Returns null on success,
-    /// "cancelled" when the user said no to Windows, or an error text.
+    /// "cancelled" when the user said no to Windows, or the error text.
     /// </summary>
-    public static string? RunElevated(bool on, IReadOnlyList<string> servers, IReadOnlyList<string> adapters)
+    public static string? RunElevated(bool on, IReadOnlyList<string> programs)
     {
         var exe = Environment.ProcessPath ?? throw new InvalidOperationException("App path unknown");
-        static string Pack(IEnumerable<string> values) => Convert.ToBase64String(Encoding.UTF8.GetBytes(string.Join("\n", values)));
-        var args = on ? $"--kill-switch on {Pack(servers)} {Pack(adapters)}" : "--kill-switch off";
+        var packed = Convert.ToBase64String(Encoding.UTF8.GetBytes(string.Join("\n", programs)));
+        var args = on ? $"--kill-switch on {packed}" : "--kill-switch off";
         try
         {
             File.Delete(HelperErrorFile);
@@ -262,14 +171,13 @@ public static class KillSwitch
         }
     }
 
-    /// <summary>The elevated side: "--kill-switch on SERVERS ADAPTERS" or "--kill-switch off". Returns the exit code.</summary>
+    /// <summary>The elevated side: "--kill-switch on PROGRAMS" or "--kill-switch off". Returns the exit code.</summary>
     public static int RunHelper(string[] args)
     {
         try
         {
-            static List<string> Unpack(string s) =>
-                Encoding.UTF8.GetString(Convert.FromBase64String(s)).Split('\n', StringSplitOptions.RemoveEmptyEntries).ToList();
-            if (args.Length >= 4 && args[1] == "on") Apply(Unpack(args[2]), Unpack(args[3]));
+            if (args.Length >= 3 && args[1] == "on")
+                Apply(Encoding.UTF8.GetString(Convert.FromBase64String(args[2])).Split('\n', StringSplitOptions.RemoveEmptyEntries));
             else if (args.Length >= 2 && args[1] == "off") Remove();
             else return 2;
             return 0;
@@ -283,4 +191,201 @@ public static class KillSwitch
     }
 
     static string HelperErrorFile => Path.Combine(Path.GetTempPath(), "ClaudeIpGuard-killswitch-error.txt");
+
+    // ---------- Windows Filtering Platform (fwpuclnt.dll) ----------
+    // Struct layouts match the Windows SDK on x64 (FWPM_FILTER0 = 200 bytes, FWPM_FILTER_CONDITION0 = 40, FWPM_SUBLAYER0 = 72).
+
+    const uint FWP_UINT8 = 1, FWP_UINT64 = 4, FWP_BYTE_BLOB_TYPE = 12, FWP_V4_ADDR_MASK = 0x100, FWP_V6_ADDR_MASK = 0x101;
+    const uint FWP_ACTION_BLOCK = 0x1001, FWP_ACTION_PERMIT = 0x1002, PERSISTENT = 1;
+    const uint FWP_E_FILTER_NOT_FOUND = 0x80320003, FWP_E_SUBLAYER_NOT_FOUND = 0x80320007;
+
+    /// <summary>A filter condition with its value in unmanaged memory (freed by Dispose).</summary>
+    sealed class Condition : IDisposable
+    {
+        public readonly Guid Field;
+        public readonly uint Type;
+        public IntPtr Value;
+        readonly bool _wfpOwned;
+
+        Condition(Guid field, uint type, IntPtr value, bool wfpOwned) { Field = field; Type = type; Value = value; _wfpOwned = wfpOwned; }
+
+        public static Condition Luid(Guid field, ulong luid)
+        {
+            var p = Marshal.AllocHGlobal(8);
+            Marshal.WriteInt64(p, (long)luid);
+            return new Condition(field, FWP_UINT64, p, false);
+        }
+
+        public static Condition AppId(Guid field, string path)
+        {
+            Check(FwpmGetAppIdFromFileName0(path, out var blob), $"app id of {path}");
+            return new Condition(field, FWP_BYTE_BLOB_TYPE, blob, true);
+        }
+
+        /// <summary>"192.168.0.0/16" or "fe80::/10".</summary>
+        public static Condition Address(Guid field, string cidr)
+        {
+            var slash = cidr.IndexOf('/');
+            var ip = IPAddress.Parse(cidr[..slash]);
+            var bits = int.Parse(cidr[(slash + 1)..]);
+            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+            {
+                // FWP_V4_ADDR_AND_MASK: address and mask in host byte order.
+                var b = ip.GetAddressBytes();
+                var p = Marshal.AllocHGlobal(8);
+                Marshal.WriteInt32(p, 0, b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]);
+                Marshal.WriteInt32(p, 4, bits == 0 ? 0 : unchecked((int)(uint.MaxValue << (32 - bits))));
+                return new Condition(field, FWP_V4_ADDR_MASK, p, false);
+            }
+            // FWP_V6_ADDR_AND_MASK: 16 address bytes + prefix length.
+            var p6 = Marshal.AllocHGlobal(17);
+            Marshal.Copy(ip.GetAddressBytes(), 0, p6, 16);
+            Marshal.WriteByte(p6, 16, (byte)bits);
+            return new Condition(field, FWP_V6_ADDR_MASK, p6, false);
+        }
+
+        public void Dispose()
+        {
+            if (Value == IntPtr.Zero) return;
+            if (_wfpOwned) FwpmFreeMemory0(ref Value);
+            else Marshal.FreeHGlobal(Value);
+            Value = IntPtr.Zero;
+        }
+    }
+
+    sealed class Engine : IDisposable
+    {
+        IntPtr _handle;
+
+        public static Engine Open()
+        {
+            Check(FwpmEngineOpen0(null, 10 /* RPC_C_AUTHN_WINNT */, IntPtr.Zero, IntPtr.Zero, out var h), "open filtering engine");
+            return new Engine { _handle = h };
+        }
+
+        public void Begin() => Check(FwpmTransactionBegin0(_handle, 0), "begin");
+        public void Commit() => Check(FwpmTransactionCommit0(_handle), "commit");
+        public void Abort() => FwpmTransactionAbort0(_handle);
+
+        public void AddSubLayer(Guid key, string name)
+        {
+            var s = new FWPM_SUBLAYER0 { subLayerKey = key, name = name, description = name, flags = PERSISTENT, weight = 0x100 };
+            Check(FwpmSubLayerAdd0(_handle, ref s, IntPtr.Zero), "add sublayer");
+        }
+
+        public void AddFilter(Guid key, Guid layer, bool permit, byte weight, string name, IReadOnlyList<Condition> conditions)
+        {
+            var size = Marshal.SizeOf<FWPM_FILTER_CONDITION0>();
+            var array = Marshal.AllocHGlobal(size * conditions.Count);
+            try
+            {
+                for (int i = 0; i < conditions.Count; i++)
+                    Marshal.StructureToPtr(new FWPM_FILTER_CONDITION0
+                    {
+                        fieldKey = conditions[i].Field, matchType = 0 /* FWP_MATCH_EQUAL */,
+                        valueType = conditions[i].Type, value = conditions[i].Value,
+                    }, array + i * size, false);
+                var f = new FWPM_FILTER0
+                {
+                    filterKey = key, name = name, description = name, flags = PERSISTENT,
+                    layerKey = layer, subLayerKey = SubLayerKey,
+                    weightType = FWP_UINT8, weightValue = weight,
+                    numFilterConditions = (uint)conditions.Count, filterCondition = array,
+                    actionType = permit ? FWP_ACTION_PERMIT : FWP_ACTION_BLOCK,
+                };
+                Check(FwpmFilterAdd0(_handle, ref f, IntPtr.Zero, out _), $"add filter \"{name}\"");
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(array);
+            }
+        }
+
+        public void DeleteFilter(Guid key)
+        {
+            var r = FwpmFilterDeleteByKey0(_handle, ref key);
+            if (r != 0 && r != FWP_E_FILTER_NOT_FOUND) Check(r, "delete filter");
+        }
+
+        public void DeleteSubLayer(Guid key)
+        {
+            var r = FwpmSubLayerDeleteByKey0(_handle, ref key);
+            if (r != 0 && r != FWP_E_SUBLAYER_NOT_FOUND) Check(r, "delete sublayer");
+        }
+
+        public void Dispose()
+        {
+            if (_handle != IntPtr.Zero) FwpmEngineClose0(_handle);
+            _handle = IntPtr.Zero;
+        }
+    }
+
+    static void Check(uint result, string what)
+    {
+        if (result != 0) throw new InvalidOperationException($"Windows Filtering Platform: {what} failed (0x{result:X8}).");
+    }
+
+    [StructLayout(LayoutKind.Explicit, CharSet = CharSet.Unicode)]
+    struct FWPM_FILTER_CONDITION0
+    {
+        [FieldOffset(0)] public Guid fieldKey;
+        [FieldOffset(16)] public uint matchType;
+        [FieldOffset(24)] public uint valueType;     // FWP_CONDITION_VALUE0.type
+        [FieldOffset(32)] public IntPtr value;       // FWP_CONDITION_VALUE0 union (pointer to the value)
+    }
+
+    [StructLayout(LayoutKind.Explicit, CharSet = CharSet.Unicode, Size = 200)]
+    struct FWPM_FILTER0
+    {
+        [FieldOffset(0)] public Guid filterKey;
+        [FieldOffset(16), MarshalAs(UnmanagedType.LPWStr)] public string name;
+        [FieldOffset(24), MarshalAs(UnmanagedType.LPWStr)] public string description;
+        [FieldOffset(32)] public uint flags;
+        [FieldOffset(40)] public IntPtr providerKey;
+        [FieldOffset(48)] public uint providerDataSize;
+        [FieldOffset(56)] public IntPtr providerData;
+        [FieldOffset(64)] public Guid layerKey;
+        [FieldOffset(80)] public Guid subLayerKey;
+        [FieldOffset(96)] public uint weightType;    // FWP_VALUE0.type
+        [FieldOffset(104)] public ulong weightValue; // FWP_VALUE0 union (uint8 weight)
+        [FieldOffset(112)] public uint numFilterConditions;
+        [FieldOffset(120)] public IntPtr filterCondition;
+        [FieldOffset(128)] public uint actionType;
+        [FieldOffset(132)] public Guid actionFilterType;
+        [FieldOffset(152)] public Guid providerContextKey;
+        [FieldOffset(168)] public IntPtr reserved;
+        [FieldOffset(176)] public ulong filterId;
+        [FieldOffset(184)] public uint effectiveWeightType;
+        [FieldOffset(192)] public ulong effectiveWeightValue;
+    }
+
+    [StructLayout(LayoutKind.Explicit, CharSet = CharSet.Unicode, Size = 72)]
+    struct FWPM_SUBLAYER0
+    {
+        [FieldOffset(0)] public Guid subLayerKey;
+        [FieldOffset(16), MarshalAs(UnmanagedType.LPWStr)] public string name;
+        [FieldOffset(24), MarshalAs(UnmanagedType.LPWStr)] public string description;
+        [FieldOffset(32)] public uint flags;
+        [FieldOffset(40)] public IntPtr providerKey;
+        [FieldOffset(48)] public uint providerDataSize;
+        [FieldOffset(56)] public IntPtr providerData;
+        [FieldOffset(64)] public ushort weight;
+    }
+
+    /// <summary>For tests: the struct sizes must match Windows (200, 40, 72 on x64).</summary>
+    public static (int Filter, int Condition, int SubLayer) StructSizes() =>
+        (Marshal.SizeOf<FWPM_FILTER0>(), Marshal.SizeOf<FWPM_FILTER_CONDITION0>(), Marshal.SizeOf<FWPM_SUBLAYER0>());
+
+    [DllImport("fwpuclnt.dll", CharSet = CharSet.Unicode)]
+    static extern uint FwpmEngineOpen0(string? serverName, uint authnService, IntPtr authIdentity, IntPtr session, out IntPtr engineHandle);
+    [DllImport("fwpuclnt.dll")] static extern uint FwpmEngineClose0(IntPtr engineHandle);
+    [DllImport("fwpuclnt.dll")] static extern uint FwpmTransactionBegin0(IntPtr engineHandle, uint flags);
+    [DllImport("fwpuclnt.dll")] static extern uint FwpmTransactionCommit0(IntPtr engineHandle);
+    [DllImport("fwpuclnt.dll")] static extern uint FwpmTransactionAbort0(IntPtr engineHandle);
+    [DllImport("fwpuclnt.dll")] static extern uint FwpmSubLayerAdd0(IntPtr engineHandle, ref FWPM_SUBLAYER0 subLayer, IntPtr sd);
+    [DllImport("fwpuclnt.dll")] static extern uint FwpmSubLayerDeleteByKey0(IntPtr engineHandle, ref Guid key);
+    [DllImport("fwpuclnt.dll")] static extern uint FwpmFilterAdd0(IntPtr engineHandle, ref FWPM_FILTER0 filter, IntPtr sd, out ulong id);
+    [DllImport("fwpuclnt.dll")] static extern uint FwpmFilterDeleteByKey0(IntPtr engineHandle, ref Guid key);
+    [DllImport("fwpuclnt.dll", CharSet = CharSet.Unicode)] static extern uint FwpmGetAppIdFromFileName0(string fileName, out IntPtr appId);
+    [DllImport("fwpuclnt.dll")] static extern void FwpmFreeMemory0(ref IntPtr p);
 }

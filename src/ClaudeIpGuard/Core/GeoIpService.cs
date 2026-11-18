@@ -10,8 +10,14 @@ public sealed record GeoResult(string Ip, string CountryCode, string CountryName
 
 public interface IIpLocator
 {
-    /// <summary>Returns the public IP and its country, or throws if it can't be determined.</summary>
-    Task<GeoResult> LocateAsync(CancellationToken ct);
+    /// <summary>
+    /// Returns the public IP and its country, or throws if it can't be determined.
+    /// direct = ignore any proxy (the path apps take when they don't use the proxy, like Claude Code).
+    /// </summary>
+    Task<GeoResult> LocateAsync(bool direct, CancellationToken ct);
+
+    /// <summary>Which proxies are on: Windows' (desktop app uses it) and HTTPS_PROXY (Claude Code uses it).</summary>
+    (bool Windows, bool Env) ProxyInUse();
 }
 
 public sealed class GeoLookupException : Exception
@@ -37,7 +43,8 @@ public sealed class GeoIpService : IIpLocator, IDisposable
         "https://ifconfig.me/ip",
     };
 
-    readonly HttpClient _http;
+    readonly HttpClient _http;   // follows the proxy, like the Claude desktop app
+    readonly HttpClient _direct; // ignores any proxy, like Claude Code
     readonly object _lock = new();
     readonly Dictionary<string, (GeoResult Result, DateTime At)> _cache = new();
     readonly (string Name, Func<string, CancellationToken, Task<GeoResult?>> Lookup)[] _providers;
@@ -51,9 +58,13 @@ public sealed class GeoIpService : IIpLocator, IDisposable
             ConnectTimeout = TimeSpan.FromSeconds(6),
             AutomaticDecompression = DecompressionMethods.All,
         };
-        _http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(8) };
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd("ClaudeIpGuard/1.0");
-        _http.DefaultRequestHeaders.CacheControl = new CacheControlHeaderValue { NoCache = true };
+        _http = NewClient(handler);
+        _direct = NewClient(new SocketsHttpHandler
+        {
+            PooledConnectionLifetime = TimeSpan.Zero,
+            ConnectTimeout = TimeSpan.FromSeconds(6),
+            UseProxy = false,
+        });
 
         _providers = new (string, Func<string, CancellationToken, Task<GeoResult?>>)[]
         {
@@ -64,10 +75,21 @@ public sealed class GeoIpService : IIpLocator, IDisposable
         };
     }
 
-    public async Task<GeoResult> LocateAsync(CancellationToken ct)
+    static HttpClient NewClient(HttpMessageHandler handler)
+    {
+        var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(8) };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("ClaudeIpGuard/1.0");
+        client.DefaultRequestHeaders.CacheControl = new CacheControlHeaderValue { NoCache = true };
+        return client;
+    }
+
+    public (bool Windows, bool Env) ProxyInUse() => (VpnDetector.WindowsProxy() != null, VpnDetector.EnvProxy() != null);
+
+    public async Task<GeoResult> LocateAsync(bool direct, CancellationToken ct)
     {
         var errors = new List<string>();
-        var ip = await GetPublicIpAsync(errors, ct)
+        // Only "what is my IP" depends on the path; the country of a known IP is looked up the normal way.
+        var ip = await GetPublicIpAsync(direct ? _direct : _http, errors, ct)
                  ?? throw new GeoLookupException("Could not get public IP (" + string.Join("; ", errors) + ")");
 
         lock (_lock)
@@ -108,13 +130,13 @@ public sealed class GeoIpService : IIpLocator, IDisposable
         throw new GeoLookupException($"Country lookup failed for {ip} (" + string.Join("; ", errors) + ")");
     }
 
-    async Task<string?> GetPublicIpAsync(List<string> errors, CancellationToken ct)
+    async Task<string?> GetPublicIpAsync(HttpClient http, List<string> errors, CancellationToken ct)
     {
         foreach (var url in IpSources)
         {
             try
             {
-                var text = (await _http.GetStringAsync(url, ct)).Trim();
+                var text = (await http.GetStringAsync(url, ct)).Trim();
                 if (IPAddress.TryParse(text, out var addr)) return addr.ToString();
                 errors.Add($"{new Uri(url).Host}: bad answer");
             }
@@ -184,7 +206,11 @@ public sealed class GeoIpService : IIpLocator, IDisposable
             string.IsNullOrWhiteSpace(timeZone) ? null : timeZone.Trim());
     }
 
-    public void Dispose() => _http.Dispose();
+    public void Dispose()
+    {
+        _http.Dispose();
+        _direct.Dispose();
+    }
 }
 
 /// <summary>Fake locator for test mode: returns a chosen country or fails on purpose.</summary>
@@ -192,6 +218,8 @@ public sealed class SimulatedLocator : IIpLocator
 {
     public string? Country { get; set; }
     public bool Fail { get; set; }
+    /// <summary>Set to simulate a Windows proxy: the direct path (Claude Code) then has this country.</summary>
+    public string? DirectCountry { get; set; }
 
     public SimulatedLocator(string? country, bool fail)
     {
@@ -199,11 +227,14 @@ public sealed class SimulatedLocator : IIpLocator
         Fail = fail;
     }
 
-    public Task<GeoResult> LocateAsync(CancellationToken ct)
+    public (bool Windows, bool Env) ProxyInUse() => (DirectCountry != null, false);
+
+    public Task<GeoResult> LocateAsync(bool direct, CancellationToken ct)
     {
-        if (Fail || string.IsNullOrEmpty(Country))
+        var country = direct && DirectCountry != null ? DirectCountry : Country;
+        if (Fail || string.IsNullOrEmpty(country))
             throw new GeoLookupException("Simulated lookup failure");
-        var code = Country.ToUpperInvariant();
+        var code = country.ToUpperInvariant();
         return Task.FromResult(new GeoResult("203.0.113.10", code, CountryNames.Get(code), "Test City", "simulated",
             TestZones.GetValueOrDefault(code)));
     }

@@ -15,7 +15,7 @@ public sealed class PrivacyViewModel : ObservableObject
     string _summary = "", _lastRunText = "";
 
     KillSwitchState _kill = new(false, Array.Empty<string>(), Array.Empty<string>());
-    List<string> _profileServers = new();
+    VpnInfo? _vpn;
     bool _killBusy;
     string _killText = "", _killResult = "";
     bool _killResultIsError;
@@ -28,7 +28,10 @@ public sealed class PrivacyViewModel : ObservableObject
 
     // ---------- kill switch card ----------
 
-    bool KillUpToDate => _kill.On && _profileServers.All(s => _kill.Servers.Contains(s));
+    // Up to date unless the VPN running now uses a program the kill switch doesn't allow (another VPN app).
+    IEnumerable<string> NotAllowedPrograms => (_vpn?.Programs ?? Array.Empty<string>())
+        .Where(p => !_kill.Programs.Contains(p, StringComparer.OrdinalIgnoreCase));
+    bool KillUpToDate => _kill.On && !NotAllowedPrograms.Any();
     public string KillSwitchText { get => _killText; private set => Set(ref _killText, value); }
     public string KillResult { get => _killResult; private set { if (Set(ref _killResult, value)) OnPropertyChanged(nameof(KillResultVisibility)); } }
     public Visibility KillResultVisibility => string.IsNullOrEmpty(KillResult) ? Visibility.Collapsed : Visibility.Visible;
@@ -42,36 +45,42 @@ public sealed class PrivacyViewModel : ObservableObject
 
     public async Task RefreshKillSwitchAsync()
     {
-        var (state, servers) = await Task.Run(() => (KillSwitch.Read(), KillSwitch.FindVpnServers()));
+        var (state, vpn) = await Task.Run(() => (KillSwitch.Read(), VpnDetector.Detect()));
         _kill = state;
-        _profileServers = servers;
+        _vpn = vpn;
         RefreshKillTexts();
     }
+
+    static string Names(IEnumerable<string> programs) => string.Join(", ", programs.Select(Path.GetFileName));
 
     void RefreshKillTexts()
     {
         var L = Loc.Instance;
         KillSwitchText = _kill.On
-            ? L.Format("Kill_DescOn", string.Join(", ", _kill.Adapters), string.Join(", ", _kill.Servers)) +
-              (KillUpToDate ? "" : " " + L.Format("Kill_DescMissing", string.Join(", ", _profileServers.Except(_kill.Servers))))
+            ? L.Format("Kill_DescOn", string.Join(", ", _kill.Adapters), Names(_kill.Programs)) +
+              (KillUpToDate ? "" : " " + L.Format("Kill_DescMissing", Names(NotAllowedPrograms)))
             : L["Kill_DescOff"];
         foreach (var name in new[] { nameof(KillStatus), nameof(KillStatusBrush), nameof(KillOnButtonText), nameof(KillOnVisibility),
                      nameof(KillOffVisibility), nameof(CanToggleKill), nameof(KillResultBrush) })
             OnPropertyChanged(name);
     }
 
-    /// <summary>Turns the kill switch on (or updates it with the current VPN servers). Windows asks for admin.</summary>
+    /// <summary>
+    /// Turns the kill switch on (or adds the VPN program in use now). The VPN must be connected, so the app can see
+    /// which program it is. Programs already allowed stay allowed. Windows asks for admin.
+    /// </summary>
     public async Task TurnKillSwitchOnAsync(Window owner)
     {
         var L = Loc.Instance;
-        var servers = await Task.Run(() => KillSwitch.FindVpnServers());
-        var adapters = KillSwitch.PhysicalAdapters();
-        if (servers.Count == 0) { ShowKillResult(true, L["Kill_NoServers"]); return; }
+        var (vpn, adapters) = await Task.Run(() => (VpnDetector.Detect(), VpnDetector.Adapters().Where(a => a.Hardware).ToList()));
+        if (!vpn.Active || vpn.Programs.Count == 0) { ShowKillResult(true, L["Kill_NoVpn"]); return; }
         if (adapters.Count == 0) { ShowKillResult(true, L["Kill_NoAdapters"]); return; }
+        // Keep VPN programs allowed earlier (e.g. OpenVPN and v2ray both), unless they were removed from the PC.
+        var programs = _kill.Programs.Where(File.Exists).Concat(vpn.Programs).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var options = L.IsPersian ? MessageBoxOptions.RtlReading | MessageBoxOptions.RightAlign : MessageBoxOptions.None;
-        if (MessageBox.Show(owner, L.Format("Kill_ConfirmOn", string.Join(", ", adapters), string.Join(", ", servers)), L["Kill_Title"],
-                MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No, options) != MessageBoxResult.Yes) return;
-        await ChangeKillSwitchAsync(true, servers, adapters);
+        if (MessageBox.Show(owner, L.Format("Kill_ConfirmOn", string.Join(", ", adapters.Select(a => a.Name)), string.Join("\n", programs)),
+                L["Kill_Title"], MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No, options) != MessageBoxResult.Yes) return;
+        await ChangeKillSwitchAsync(true, programs);
     }
 
     public async Task TurnKillSwitchOffAsync(Window owner)
@@ -80,17 +89,17 @@ public sealed class PrivacyViewModel : ObservableObject
         var options = L.IsPersian ? MessageBoxOptions.RtlReading | MessageBoxOptions.RightAlign : MessageBoxOptions.None;
         if (MessageBox.Show(owner, L["Kill_ConfirmOff"], L["Kill_Title"], MessageBoxButton.YesNo, MessageBoxImage.Warning,
                 MessageBoxResult.No, options) != MessageBoxResult.Yes) return;
-        await ChangeKillSwitchAsync(false, Array.Empty<string>(), Array.Empty<string>());
+        await ChangeKillSwitchAsync(false, Array.Empty<string>());
     }
 
-    async Task ChangeKillSwitchAsync(bool on, IReadOnlyList<string> servers, IReadOnlyList<string> adapters)
+    async Task ChangeKillSwitchAsync(bool on, IReadOnlyList<string> programs)
     {
         var L = Loc.Instance;
         _killBusy = true;
         RefreshKillTexts();
         try
         {
-            var error = await Task.Run(() => KillSwitch.RunElevated(on, servers, adapters));
+            var error = await Task.Run(() => KillSwitch.RunElevated(on, programs));
             await RefreshKillSwitchAsync();
             if (error == "cancelled") ShowKillResult(true, L["Kill_Cancelled"]);
             else if (error != null || _kill.On != on) ShowKillResult(true, L.Format("Kill_Failed", error ?? "?"));
