@@ -158,6 +158,13 @@ Console.WriteLine($"      self-launch: this self-test was started from inside Cl
     Console.WriteLine($"      VPN here: tunnel={vpn.TunnelAdapter?.Name ?? "-"} proxy={vpn.Proxy ?? "-"} programs={string.Join(", ", vpn.Programs.Select(Path.GetFileName))} servers={vpn.Servers.Count}");
     if (vpn.TunnelAdapter != null) Check(!vpn.TunnelAdapter.Hardware && vpn.Programs.Count > 0, "vpn: tunnel found and its VPN program identified");
 
+    // The proxy path must follow Windows' proxy setting as it is now (not a copy taken when the app started).
+    var proxyType = typeof(GeoIpService).Assembly.GetType("ClaudeIpGuard.Core.CurrentWindowsProxy")!;
+    var currentProxy = (System.Net.IWebProxy)Activator.CreateInstance(proxyType)!;
+    var winProxy = VpnDetector.WindowsProxy();
+    var used = currentProxy.GetProxy(new Uri("https://api.ipify.org"));
+    Check(winProxy == null ? used == null : used?.Authority == winProxy, $"geo: proxy path uses the current Windows proxy ({winProxy ?? "none"})");
+
     // UDP-only VPNs (v2ray with Hysteria2/TUIC...): known cores are recognized among programs with UDP sockets.
     Check(new[] { "xray", "v2ray", "sing-box", "HiddifyCli", "mihomo-windows-amd64", "clash-verge", "nekobox_core", "tun2socks", "hysteria2" }.All(VpnDetector.IsKnownVpnCore) &&
           !new[] { "chrome", "svchost", "msedge", "claude", "OpenVPNConnect", "node" }.Any(VpnDetector.IsKnownVpnCore),
@@ -177,6 +184,15 @@ Console.WriteLine($"      self-launch: this self-test was started from inside Cl
           plan.Any(p => p.Kind == "lan" && !p.IPv6 && p.Values.Contains("192.168.0.0/16") && p.Values.Contains("255.255.255.255/32")),
         "kill switch: VPN program and local network (router, DNS, DHCP) allowed");
     Console.WriteLine($"      kill switch now: {(KillSwitch.Read().On ? "on" : "off")}");
+
+    // A firewall rule that doesn't exist must read as "none", not as an error (that error stopped "Turn on").
+    var find = typeof(KillSwitch).GetMethod("FindLegacyRule", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+    object policy = Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FwPolicy2", true)!)!;
+    object? missing = null;
+    Exception? findError = null;
+    try { missing = find.Invoke(null, new[] { policy, "Claude IP Guard test rule that does not exist" }); }
+    catch (System.Reflection.TargetInvocationException ex) { findError = ex.InnerException; }
+    Check(findError == null && missing == null, "kill switch: missing old firewall rule reads as none" + (findError != null ? ": " + findError.Message : ""));
 }
 
 // Time zone: IP location -> Windows time zone (dry run, the real time zone is not changed here)
@@ -328,6 +344,13 @@ using (var geo = new GeoIpService())
         var r = await geo.LocateAsync(false, CancellationToken.None);
         Console.WriteLine($"      live result: {r.Ip} -> {r.CountryName} ({r.CountryCode}), {r.City}, via {r.Provider}");
         Check(r.CountryCode.Length == 2, "live IP + country lookup");
+        // Direct path: IP and country both without any proxy (the case that failed after switching v2ray -> OpenVPN).
+        using (var geoDirect = new GeoIpService())
+        {
+            var d = await geoDirect.LocateAsync(true, CancellationToken.None);
+            Console.WriteLine($"      direct path: {d.Ip} -> {d.CountryName} ({d.CountryCode}) via {d.Provider}");
+            Check(d.CountryCode.Length == 2, "live direct-path IP + country lookup (no proxy at all)");
+        }
         var liveTz = TimeZoneSync.ToWindowsId(r.TimeZone);
         Console.WriteLine($"      live time zone: {r.TimeZone ?? "(none)"} -> {liveTz ?? "(none)"}; Windows now: {TimeZoneInfo.Local.Id}");
         Check(liveTz != null, "live lookup gives a time zone Windows knows");

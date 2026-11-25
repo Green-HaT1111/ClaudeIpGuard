@@ -40,7 +40,7 @@ public sealed class PrivacyViewModel : ObservableObject
     public string KillStatus => Loc.Instance[_kill.On ? (KillUpToDate ? "Kill_StatusOn" : "Kill_StatusOutdated") : "Kill_StatusOff"];
     public string KillOnButtonText => Loc.Instance[_kill.On ? "Btn_KillUpdate" : "Btn_KillOn"];
     public Visibility KillOnVisibility => KillUpToDate ? Visibility.Collapsed : Visibility.Visible;
-    public Visibility KillOffVisibility => _kill.On ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility KillOffVisibility => _kill.On || _kill.OldRules ? Visibility.Visible : Visibility.Collapsed;
     public bool CanToggleKill => !_killBusy;
 
     public async Task RefreshKillSwitchAsync()
@@ -59,7 +59,7 @@ public sealed class PrivacyViewModel : ObservableObject
         KillSwitchText = _kill.On
             ? L.Format("Kill_DescOn", string.Join(", ", _kill.Adapters), Names(_kill.Programs)) +
               (KillUpToDate ? "" : " " + L.Format("Kill_DescMissing", Names(NotAllowedPrograms)))
-            : L["Kill_DescOff"];
+            : L["Kill_DescOff"] + (_kill.OldRules ? " " + L["Kill_DescOldRules"] : "");
         foreach (var name in new[] { nameof(KillStatus), nameof(KillStatusBrush), nameof(KillOnButtonText), nameof(KillOnVisibility),
                      nameof(KillOffVisibility), nameof(CanToggleKill), nameof(KillResultBrush) })
             OnPropertyChanged(name);
@@ -75,8 +75,10 @@ public sealed class PrivacyViewModel : ObservableObject
         var (vpn, adapters) = await Task.Run(() => (VpnDetector.Detect(), VpnDetector.Adapters().Where(a => a.Hardware).ToList()));
         if (!vpn.Active || vpn.Programs.Count == 0) { ShowKillResult(true, L["Kill_NoVpn"]); return; }
         if (adapters.Count == 0) { ShowKillResult(true, L["Kill_NoAdapters"]); return; }
-        // Keep VPN programs allowed earlier (e.g. OpenVPN and v2ray both), unless they were removed from the PC.
-        var programs = _kill.Programs.Where(File.Exists).Concat(vpn.Programs).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        // Keep every VPN program allowed earlier (e.g. OpenVPN and v2ray both), even across "Turn off",
+        // unless it was removed from the PC.
+        var programs = _kill.Programs.Concat(KillSwitch.KnownPrograms()).Where(File.Exists)
+            .Concat(vpn.Programs).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var options = L.IsPersian ? MessageBoxOptions.RtlReading | MessageBoxOptions.RightAlign : MessageBoxOptions.None;
         if (MessageBox.Show(owner, L.Format("Kill_ConfirmOn", string.Join(", ", adapters.Select(a => a.Name)), string.Join("\n", programs)),
                 L["Kill_Title"], MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No, options) != MessageBoxResult.Yes) return;

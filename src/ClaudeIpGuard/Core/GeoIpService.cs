@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -47,26 +47,29 @@ public sealed class GeoIpService : IIpLocator, IDisposable
     readonly HttpClient _direct; // ignores any proxy, like Claude Code
     readonly object _lock = new();
     readonly Dictionary<string, (GeoResult Result, DateTime At)> _cache = new();
-    readonly (string Name, Func<string, CancellationToken, Task<GeoResult?>> Lookup)[] _providers;
+    readonly (string Name, Func<HttpClient, string, CancellationToken, Task<GeoResult?>> Lookup)[] _providers;
 
     public GeoIpService()
     {
-        var handler = new SocketsHttpHandler
+        // No connection reuse: after a VPN or Wi-Fi switch every check must use the new route.
+        // The proxy path reads Windows' proxy setting on every request: .NET's own default proxy is read once
+        // at start and keeps an old VPN's proxy (e.g. 127.0.0.1:10808) after that VPN is turned off.
+        _http = NewClient(new SocketsHttpHandler
         {
-            // No connection reuse: after a VPN or Wi-Fi switch every check must use the new route.
             PooledConnectionLifetime = TimeSpan.Zero,
             ConnectTimeout = TimeSpan.FromSeconds(6),
             AutomaticDecompression = DecompressionMethods.All,
-        };
-        _http = NewClient(handler);
+            Proxy = new CurrentWindowsProxy(),
+        });
         _direct = NewClient(new SocketsHttpHandler
         {
             PooledConnectionLifetime = TimeSpan.Zero,
             ConnectTimeout = TimeSpan.FromSeconds(6),
+            AutomaticDecompression = DecompressionMethods.All,
             UseProxy = false,
         });
 
-        _providers = new (string, Func<string, CancellationToken, Task<GeoResult?>>)[]
+        _providers = new (string, Func<HttpClient, string, CancellationToken, Task<GeoResult?>>)[]
         {
             ("ipwho.is", IpWhoIsAsync),
             ("country.is", CountryIsAsync),
@@ -88,8 +91,9 @@ public sealed class GeoIpService : IIpLocator, IDisposable
     public async Task<GeoResult> LocateAsync(bool direct, CancellationToken ct)
     {
         var errors = new List<string>();
-        // Only "what is my IP" depends on the path; the country of a known IP is looked up the normal way.
-        var ip = await GetPublicIpAsync(direct ? _direct : _http, errors, ct)
+        // The country is looked up on the same path that just gave the IP: that path is known to work.
+        var http = direct ? _direct : _http;
+        var ip = await GetPublicIpAsync(http, errors, ct)
                  ?? throw new GeoLookupException("Could not get public IP (" + string.Join("; ", errors) + ")");
 
         lock (_lock)
@@ -102,7 +106,7 @@ public sealed class GeoIpService : IIpLocator, IDisposable
         {
             try
             {
-                var result = await lookup(ip, ct);
+                var result = await lookup(http, ip, ct);
                 if (result != null)
                 {
                     lock (_lock) _cache[ip] = (result, DateTime.UtcNow);
@@ -152,32 +156,32 @@ public sealed class GeoIpService : IIpLocator, IDisposable
         return null;
     }
 
-    async Task<JsonElement> GetJsonAsync(string url, CancellationToken ct)
+    static async Task<JsonElement> GetJsonAsync(HttpClient http, string url, CancellationToken ct)
     {
-        using var response = await _http.GetAsync(url, ct);
+        using var response = await http.GetAsync(url, ct);
         response.EnsureSuccessStatusCode();
         var body = await response.Content.ReadAsStringAsync(ct);
         using var doc = JsonDocument.Parse(body);
         return doc.RootElement.Clone();
     }
 
-    async Task<GeoResult?> IpWhoIsAsync(string ip, CancellationToken ct)
+    static async Task<GeoResult?> IpWhoIsAsync(HttpClient http, string ip, CancellationToken ct)
     {
-        var j = await GetJsonAsync($"https://ipwho.is/{ip}", ct);
+        var j = await GetJsonAsync(http, $"https://ipwho.is/{ip}", ct);
         if (j.TryGetProperty("success", out var ok) && ok.ValueKind == JsonValueKind.False) return null;
         var tz = j.TryGetProperty("timezone", out var t) ? Str(t, "id") : null;
         return Make(ip, Str(j, "country_code"), Str(j, "country"), Str(j, "city"), "ipwho.is", tz);
     }
 
-    async Task<GeoResult?> CountryIsAsync(string ip, CancellationToken ct)
+    static async Task<GeoResult?> CountryIsAsync(HttpClient http, string ip, CancellationToken ct)
     {
-        var j = await GetJsonAsync($"https://api.country.is/{ip}", ct);
+        var j = await GetJsonAsync(http, $"https://api.country.is/{ip}", ct);
         return Make(ip, Str(j, "country"), null, null, "country.is");
     }
 
-    async Task<GeoResult?> FreeIpApiAsync(string ip, CancellationToken ct)
+    static async Task<GeoResult?> FreeIpApiAsync(HttpClient http, string ip, CancellationToken ct)
     {
-        var j = await GetJsonAsync($"https://freeipapi.com/api/json/{ip}", ct);
+        var j = await GetJsonAsync(http, $"https://freeipapi.com/api/json/{ip}", ct);
         string? tz = null;
         if (j.TryGetProperty("timeZones", out var zones) && zones.ValueKind == JsonValueKind.Array && zones.GetArrayLength() > 0 &&
             zones[0].ValueKind == JsonValueKind.String)
@@ -185,9 +189,9 @@ public sealed class GeoIpService : IIpLocator, IDisposable
         return Make(ip, Str(j, "countryCode"), Str(j, "countryName"), Str(j, "cityName"), "freeipapi.com", tz);
     }
 
-    async Task<GeoResult?> IpApiCoAsync(string ip, CancellationToken ct)
+    static async Task<GeoResult?> IpApiCoAsync(HttpClient http, string ip, CancellationToken ct)
     {
-        var j = await GetJsonAsync($"https://ipapi.co/{ip}/json/", ct);
+        var j = await GetJsonAsync(http, $"https://ipapi.co/{ip}/json/", ct);
         if (j.TryGetProperty("error", out var err) && err.ValueKind == JsonValueKind.True) return null;
         return Make(ip, Str(j, "country_code"), Str(j, "country_name"), Str(j, "city"), "ipapi.co", Str(j, "timezone"));
     }
@@ -211,6 +215,17 @@ public sealed class GeoIpService : IIpLocator, IDisposable
         _http.Dispose();
         _direct.Dispose();
     }
+}
+
+/// <summary>Windows' proxy setting, read on every request (so a VPN turned on or off is seen at once).</summary>
+sealed class CurrentWindowsProxy : IWebProxy
+{
+    public ICredentials? Credentials { get; set; }
+
+    public Uri? GetProxy(Uri destination) =>
+        VpnDetector.WindowsProxy() is string p ? new Uri(p.Contains("://") ? p : "http://" + p) : null;
+
+    public bool IsBypassed(Uri host) => VpnDetector.WindowsProxy() == null;
 }
 
 /// <summary>Fake locator for test mode: returns a chosen country or fails on purpose.</summary>

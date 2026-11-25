@@ -9,7 +9,8 @@ namespace ClaudeIpGuard.Core;
 /// <param name="On">The filters were added (state file present).</param>
 /// <param name="Programs">VPN programs allowed through the real adapters.</param>
 /// <param name="Adapters">Real adapters (Wi-Fi, Ethernet) that are blocked for everything else.</param>
-public sealed record KillSwitchState(bool On, IReadOnlyList<string> Programs, IReadOnlyList<string> Adapters);
+/// <param name="OldRules">Firewall rules of the first kill switch version are still there (Turn on/off removes them).</param>
+public sealed record KillSwitchState(bool On, IReadOnlyList<string> Programs, IReadOnlyList<string> Adapters, bool OldRules = false);
 
 /// <summary>One filter the kill switch adds (kept separate so tests can check it without admin rights).</summary>
 public sealed record PlannedFilter(bool IPv6, bool Permit, byte Weight, string Kind, IReadOnlyList<string> Values);
@@ -41,15 +42,60 @@ public static class KillSwitch
     static readonly string[] LanV6 = { "fe80::/10", "fc00::/7", "ff00::/8" };
 
     static string StateFile => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ClaudeIpGuard", "killswitch.json");
+    // Every VPN program ever allowed. Kept when the kill switch is turned off, so switching back to an earlier
+    // VPN app (e.g. v2ray -> OpenVPN -> v2ray) needs no turning off again.
+    static string KnownFile => Path.Combine(Path.GetDirectoryName(StateFile)!, "killswitch-known.json");
+
+    /// <summary>VPN programs allowed at some point (no admin needed).</summary>
+    public static IReadOnlyList<string> KnownPrograms()
+    {
+        try { return File.Exists(KnownFile) ? JsonSerializer.Deserialize<List<string>>(File.ReadAllText(KnownFile))! : new List<string>(); }
+        catch { return new List<string>(); }
+    }
 
     sealed record StateData(List<string> Programs, List<string> Adapters);
 
-    /// <summary>Reads the state (no admin needed).</summary>
+    // The first kill switch (before v2) used Windows Firewall rules with these names. They block Wi-Fi except old
+    // OpenVPN servers, so they must go when the kill switch is turned off or replaced.
+    static readonly string[] LegacyRules = { "Claude IP Guard kill switch (IPv4)", "Claude IP Guard kill switch (IPv6)" };
+
+    /// <summary>Firewall rule by name, or null. A missing rule comes back as an error (0x80070002, file not found).</summary>
+    static object? FindLegacyRule(dynamic policy, string name)
+    {
+        try { return policy.Rules.Item(name); }
+        catch (Exception ex) when (ex.HResult == unchecked((int)0x80070002)) { return null; }
+    }
+
+    static bool LegacyRulePresent()
+    {
+        try
+        {
+            dynamic policy = Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FwPolicy2", true)!)!;
+            return LegacyRules.Any(name => FindLegacyRule(policy, name) != null);
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write("Kill switch: could not read old firewall rules", ex);
+            return false;
+        }
+    }
+
+    /// <summary>Removes the first kill switch's firewall rules (all copies). Needs admin.</summary>
+    static void RemoveLegacyRules()
+    {
+        dynamic policy = Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FwPolicy2", true)!)!;
+        foreach (var name in LegacyRules)
+            for (int i = 0; i < 20 && FindLegacyRule(policy, name) != null; i++)
+                policy.Rules.Remove(name);
+    }
+
+    /// <summary>Reads the state (no admin needed). Old firewall rules from the first version are reported, not counted as "on".</summary>
     public static KillSwitchState Read()
     {
         try
         {
-            if (!File.Exists(StateFile)) return new KillSwitchState(false, Array.Empty<string>(), Array.Empty<string>());
+            if (!File.Exists(StateFile))
+                return new KillSwitchState(false, Array.Empty<string>(), Array.Empty<string>(), LegacyRulePresent());
             var s = JsonSerializer.Deserialize<StateData>(File.ReadAllText(StateFile))!;
             return new KillSwitchState(true, s.Programs, s.Adapters);
         }
@@ -81,6 +127,7 @@ public static class KillSwitch
         if (missing.Count > 0) throw new InvalidOperationException("VPN program not found: " + string.Join(", ", missing));
         var adapters = VpnDetector.Adapters().Where(a => a.Hardware).ToList();
         if (adapters.Count == 0) throw new InvalidOperationException("No Wi-Fi or Ethernet adapter found.");
+        RemoveLegacyRules();
 
         using var engine = Engine.Open();
         engine.Begin();
@@ -118,11 +165,14 @@ public static class KillSwitch
 
         Directory.CreateDirectory(Path.GetDirectoryName(StateFile)!);
         File.WriteAllText(StateFile, JsonSerializer.Serialize(new StateData(programs.ToList(), adapters.Select(a => a.Name).ToList())));
+        File.WriteAllText(KnownFile, JsonSerializer.Serialize(
+            KnownPrograms().Concat(programs).Distinct(StringComparer.OrdinalIgnoreCase).ToList()));
     }
 
     /// <summary>Removes every filter of the kill switch. Needs admin.</summary>
     public static void Remove()
     {
+        RemoveLegacyRules();
         using var engine = Engine.Open();
         engine.Begin();
         try
@@ -135,6 +185,11 @@ public static class KillSwitch
             engine.Abort();
             throw;
         }
+        // Remember the programs that were allowed, so turning on again later still includes them.
+        var allowed = Read().Programs;
+        if (allowed.Count > 0)
+            File.WriteAllText(KnownFile, JsonSerializer.Serialize(
+                KnownPrograms().Concat(allowed).Distinct(StringComparer.OrdinalIgnoreCase).ToList()));
         File.Delete(StateFile);
     }
 

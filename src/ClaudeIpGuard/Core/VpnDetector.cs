@@ -45,17 +45,28 @@ public static class VpnDetector
         }
         if (proxyPid is int pp && ProcessGuard.GetImagePath(pp) is string proxyExe) programs.Add(proxyExe);
 
-        // Who talks to the internet straight from a hardware adapter's address?
-        // Tunnel mode: only the VPN client does. Proxy mode: only count the proxy program (others bypass the proxy).
+        // Who talks to the internet straight from a hardware adapter's address? Proxy mode: only the proxy program
+        // counts (others bypass the proxy). Tunnel mode: the VPN client, but also apps whose connections were opened
+        // before the VPN came up (they stay on Wi-Fi). So keep the ones that look like the VPN: connected to a server
+        // Windows has a host route for (OpenVPN-style), or a known VPN core. Only when none does (unknown VPN), keep all.
         if (tunnel != null || proxyPid != null)
         {
-            var hardwareIps = adapters.Where(x => x.Hardware).SelectMany(x => x.IPv4).ToHashSet();
+            var hardware = adapters.Where(x => x.Hardware).ToList();
+            var hardwareIps = hardware.SelectMany(x => x.IPv4).ToHashSet();
+            var hostRoutes = tunnel != null ? HostRoutes(hardware.Select(x => x.Index).ToHashSet()) : new HashSet<IPAddress>();
+            var talkers = new List<(string Exe, IPAddress Remote, bool VpnLike)>();
             foreach (var r in rows.Where(r => r.State == TcpEstablished && hardwareIps.Contains(r.Local) && IsPublic(r.Remote)))
             {
                 if (tunnel == null && r.Pid != proxyPid) continue;
                 if (r.Pid <= 4 || ProcessGuard.GetImagePath(r.Pid) is not string exe) continue;
-                programs.Add(exe);
-                servers.Add(r.Remote.ToString());
+                talkers.Add((exe, r.Remote, r.Pid == proxyPid || hostRoutes.Contains(r.Remote) ||
+                                            IsKnownVpnCore(Path.GetFileNameWithoutExtension(exe))));
+            }
+            var chosen = talkers.Any(t => t.VpnLike) ? talkers.Where(t => t.VpnLike) : talkers;
+            foreach (var t in chosen)
+            {
+                programs.Add(t.Exe);
+                servers.Add(t.Remote.ToString());
             }
         }
 
@@ -100,6 +111,23 @@ public static class VpnDetector
                     ipv4.TryGetValue((int)index, out var ips) ? ips : new List<IPAddress>()));
             }
         return list;
+    }
+
+    /// <summary>Single-address routes (x.x.x.x/32) through the given adapters: VPN clients add one for their own server.</summary>
+    static HashSet<IPAddress> HostRoutes(HashSet<uint> adapterIndexes)
+    {
+        var set = new HashSet<IPAddress>();
+        using var searcher = new ManagementObjectSearcher(@"root\StandardCimv2",
+            "SELECT DestinationPrefix, InterfaceIndex FROM MSFT_NetRoute WHERE AddressFamily = 2");
+        foreach (ManagementObject mo in searcher.Get())
+            using (mo)
+            {
+                var prefix = mo["DestinationPrefix"] as string ?? "";
+                if (prefix.EndsWith("/32") && adapterIndexes.Contains(Convert.ToUInt32(mo["InterfaceIndex"])) &&
+                    IPAddress.TryParse(prefix[..^3], out var ip) && IsPublic(ip))
+                    set.Add(ip);
+            }
+        return set;
     }
 
     /// <summary>The adapter Windows uses to reach the internet now (route to a public address).</summary>

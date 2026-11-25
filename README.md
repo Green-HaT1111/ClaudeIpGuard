@@ -19,12 +19,17 @@ European country.
   - *Tunnel mode*: the internet route goes through a non-hardware adapter (Windows' own "hardware" flag).
   - *Proxy mode*: Windows' proxy or `HTTPS_PROXY` points to a program on this PC (e.g. Hiddify `127.0.0.1:12334`).
   - The VPN program is the one talking to the internet straight from the Wi-Fi/Ethernet address (TCP).
+    Apps whose connections were opened before the VPN came up also stay on Wi-Fi, so in tunnel mode only the
+    VPN-like ones are kept: the local proxy program, programs connected to a server Windows has a /32 host
+    route for (OpenVPN-style), and known VPN cores. Only if none matches (unknown VPN) are all of them used.
     UDP-only VPNs (v2ray with Hysteria2/TUIC/QUIC...) can't be seen that way, because Windows doesn't record
     where UDP goes: in tunnel mode the known cores among programs with UDP sockets are used instead
     (xray, v2ray, sing-box, Hiddify, mihomo/Clash, NekoBox, tun2socks, Hysteria, TUIC, Juicity).
 - **Proxy mode, two paths**: the desktop app uses Windows' proxy, Claude Code ignores it (unless
   `HTTPS_PROXY` is set) and goes out directly. The guard then checks both IPs and closes each app only
-  when *its* path is outside the allowed countries.
+  when *its* path is outside the allowed countries. Windows' proxy setting is read on every request (not
+  once at start), and the country is looked up on the same path that gave the IP, so switching VPNs
+  (e.g. v2ray → OpenVPN) is picked up at the next check. The Help tab has a step-by-step switching guide.
 - **Time zone**: after each check the Windows time zone is set to the one of the IP's location
   (IP in England → `(UTC+00:00) London`), using `tzutil` (no admin needed). Can be turned off in
   Settings. Turn off Windows "Set time zone automatically", or Windows may change it back.
