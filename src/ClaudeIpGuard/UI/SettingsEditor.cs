@@ -9,7 +9,7 @@ namespace ClaudeIpGuard.UI;
 public sealed class SettingsEditor : ObservableObject
 {
     string _intervalText = "30", _message = "";
-    bool _killDesktop, _killCli, _failSafe, _messageIsError;
+    bool _killDesktop, _killCli, _failSafe, _syncTimeZone, _messageIsError;
     string? _messageKey;
     object[] _messageArgs = Array.Empty<object>();
 
@@ -19,6 +19,7 @@ public sealed class SettingsEditor : ObservableObject
     public bool KillDesktop { get => _killDesktop; set => Set(ref _killDesktop, value); }
     public bool KillCli { get => _killCli; set => Set(ref _killCli, value); }
     public bool FailSafe { get => _failSafe; set => Set(ref _failSafe, value); }
+    public bool SyncTimeZone { get => _syncTimeZone; set => Set(ref _syncTimeZone, value); }
 
     public string Message { get => _message; private set => Set(ref _message, value); }
     public Brush MessageBrush => _messageIsError ? Brushes.Firebrick : Brushes.SeaGreen;
@@ -30,6 +31,7 @@ public sealed class SettingsEditor : ObservableObject
         KillDesktop = s.KillDesktopApp;
         KillCli = s.KillCli;
         FailSafe = s.FailSafeBlock;
+        SyncTimeZone = s.SyncTimeZone;
         Picker.SearchText = "";
         Picker.SetSelection(s.AllowedCountries);
         ClearMessage();
@@ -60,6 +62,7 @@ public sealed class SettingsEditor : ObservableObject
         result.KillDesktopApp = KillDesktop;
         result.KillCli = KillCli;
         result.FailSafeBlock = FailSafe;
+        result.SyncTimeZone = SyncTimeZone;
         result.AllowedCountries = codes.ToList();
         result.Normalize();
         return true;

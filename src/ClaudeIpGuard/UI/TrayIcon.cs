@@ -34,6 +34,7 @@ public sealed class TrayIcon : IDisposable
         {
             if (e.Button == WF.MouseButtons.Left) _open();
         };
+        _icon.BalloonTipClicked += (_, _) => BalloonClicked?.Invoke();
         BuildMenu();
         Update();
 
@@ -43,6 +44,17 @@ public sealed class TrayIcon : IDisposable
             BuildMenu();
             Update();
         };
+    }
+
+    public event Action? BalloonClicked;
+
+    /// <summary>Windows notification from the tray icon. Clicking it raises <see cref="BalloonClicked"/>.</summary>
+    public void ShowNotification(string title, string text)
+    {
+        _icon.BalloonTipTitle = title;
+        _icon.BalloonTipText = text.Length > 250 ? text[..250] + "…" : text;
+        _icon.BalloonTipIcon = WF.ToolTipIcon.Warning;
+        _icon.ShowBalloonTip(15000);
     }
 
     void BuildMenu()

@@ -4,3 +4,4 @@ publish/
 dist/
 .vs/
 *.user
+graphify-out/

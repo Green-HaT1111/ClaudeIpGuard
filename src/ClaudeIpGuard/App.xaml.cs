@@ -52,8 +52,23 @@ public partial class App : Application, IAppHost
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        // Elevated helper run (Windows asked for admin): change the kill switch firewall rules and exit.
+        if (e.Args.Length > 0 && e.Args[0] == "--kill-switch")
+        {
+            Shutdown(KillSwitch.RunHelper(e.Args));
+            return;
+        }
         var options = StartupOptions.Parse(e.Args);
         var suffix = options.TestMode ? "_Test" : "";
+
+        // Started from inside Claude (its terminal, Claude Code...)? Then closing Claude would close the guard too.
+        // Restart as an independent copy through Explorer and leave.
+        if (!options.TestMode && SelfLaunch.StartedByClaude() && SelfLaunch.RelaunchIndependent(options.Minimized))
+        {
+            Shutdown();
+            return;
+        }
+        if (SelfLaunch.TakeRelaunchMinimized()) options = options with { Minimized = true };
 
         // One instance only. A second launch just brings the running dashboard to the front.
         _mutex = new Mutex(true, MutexName + suffix, out var isFirst);
@@ -109,12 +124,19 @@ public partial class App : Application, IAppHost
             ? new SimulatedLocator(options.SimulateCountry, options.SimulateFailure)
             : new GeoIpService();
         var guard = new ProcessGuard(options.TestMode ? new[] { "notepad" } : null);
+        var timeZone = new TimeZoneSync(dryRun: options.TestMode);
 
-        _engine = new GuardEngine(() => _settings, locator, guard);
+        _engine = new GuardEngine(() => _settings, locator, guard, timeZone);
         var vm = new MainViewModel(_engine, this, options.TestMode);
         _window = new MainWindow(vm, this);
         if (options.TestMode) _window.Title += " [TEST]";
         _tray = new TrayIcon(_engine, ShowDashboard, () => RequestExit(null));
+        vm.BrowserData.Notify += (title, text) => _tray?.ShowNotification(title, text);
+        _tray.BalloonClicked += () =>
+        {
+            ShowDashboard();
+            _window?.ShowBrowserData();
+        };
         _engine.Start();
 
         if (!options.Minimized) ShowDashboard();

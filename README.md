@@ -1,8 +1,17 @@
-# Claude IP Guard
+﻿# Claude IP Guard
 
 A Windows 10/11 tray app that checks your public IP address and closes **Claude** (desktop app and
 Claude Code CLI) when the IP is not in an allowed country. By default the allowed list is every
 European country.
+
+## Download
+
+Download **ClaudeIpGuard-Setup-x.y.z.exe** from the
+[latest release](https://github.com/Green-HaT1111/ClaudeIpGuard/releases/latest) and run it.
+It runs on Windows 10 and 11 (64-bit), and .NET is included, so you don't need to install anything else.
+
+The installer isn't code-signed, so Windows SmartScreen may warn about an unknown publisher. Click
+**More info → Run anyway**.
 
 ## How it works
 
@@ -14,20 +23,108 @@ European country.
 - **Not allowed** → Claude is closed immediately, and closed again every second if it is reopened.
 - **Can't verify** (offline, all services down) → Claude is blocked too (fail-safe, can be turned off).
 - Uses the IP the internet sees. With a VPN, that is the VPN's country.
+- **Any VPN, detected automatically** (OpenVPN, WireGuard, v2ray/Xray, sing-box/Hiddify, Clash, commercial
+  VPNs), shown in the dashboard's VPN card:
+  - *Tunnel mode*: the internet route goes through a non-hardware adapter (Windows' own "hardware" flag).
+  - *Proxy mode*: Windows' proxy or `HTTPS_PROXY` points to a program on this PC (e.g. Hiddify `127.0.0.1:12334`).
+  - The VPN program is the one talking to the internet straight from the Wi-Fi/Ethernet address (TCP).
+    Apps whose connections were opened before the VPN came up also stay on Wi-Fi, so in tunnel mode only the
+    VPN-like ones are kept: the local proxy program, programs connected to a server Windows has a /32 host
+    route for (OpenVPN-style), and known VPN cores. Only if none matches (unknown VPN) are all of them used.
+    UDP-only VPNs (v2ray with Hysteria2/TUIC/QUIC...) can't be seen that way, because Windows doesn't record
+    where UDP goes: in tunnel mode the known cores among programs with UDP sockets are used instead
+    (xray, v2ray, sing-box, Hiddify, mihomo/Clash, NekoBox, tun2socks, Hysteria, TUIC, Juicity).
+- **Proxy mode, two paths**: the desktop app uses Windows' proxy, Claude Code ignores it (unless
+  `HTTPS_PROXY` is set) and goes out directly. The guard then checks both IPs and closes each app only
+  when *its* path is outside the allowed countries. Windows' proxy setting is read on every request (not
+  once at start), and the country is looked up on the same path that gave the IP, so switching VPNs
+  (e.g. v2ray → OpenVPN) is picked up at the next check. The Help tab has a step-by-step switching guide.
+- **Time zone**: after each check the Windows time zone is set to the one of the IP's location
+  (IP in England → `(UTC+00:00) London`), using `tzutil` (no admin needed). Can be turned off in
+  Settings. Turn off Windows "Set time zone automatically", or Windows may change it back.
 
 What gets closed:
 
 | Setting | Processes |
 |---|---|
-| Claude desktop app | `claude.exe` from the Microsoft Store package (`WindowsApps\Claude_*`) or `%LocalAppData%\AnthropicClaude` |
+| Claude desktop app | every process running from the desktop app's folder, whatever its name (Microsoft Store package `WindowsApps\Claude_*`, or `%LocalAppData%\AnthropicClaude`), the Claude Code copy it downloads to `%AppData%\Claude\`, and its background service `CoworkVMService` |
 | Claude Code CLI | any other `claude.exe` (native installer), and `node.exe` running `@anthropic-ai/claude-code` (npm install) |
+
+The installer gives normal users permission to stop `CoworkVMService` if they don't have it already,
+so the guard doesn't need admin rights for it. Uninstall removes that permission again.
 
 ## Dashboard
 
 - **Dashboard**: status (green allowed / red blocked / amber paused), public IP, country, city,
   lookup service, last/next check, counters. Buttons: Check now, Pause/Resume, Hide to tray.
 - **Activity**: log of checks, location changes and every time Claude was closed.
-- **Settings**: interval, which apps to close, fail-safe, allowed countries, change password.
+- **Leak check**: other ways the real location can be seen besides the IP (see below), and the VPN kill switch.
+- **Help**: how protection and the kill switch work, how to turn the kill switch off, and the emergency command.
+- **Browser data**: data saved by your browsers that can show your real location (see below), with a
+  button to clear what you tick.
+- **Settings**: interval, which apps to close, fail-safe, time zone sync, allowed countries, change password.
+
+### Browser data
+
+Checks Chrome, Edge, Brave, Vivaldi, Opera, Opera GX, Yandex, Chromium, Firefox, LibreWolf and Waterfox
+(all profiles) at start, every 30 minutes and whenever the IP country changes. When it finds data that
+shows your location, a banner appears on the dashboard, a Windows notification pops up from the tray icon,
+and the Activity log gets a line. Nothing is cleared until you tick items and press **Clear selected**.
+
+| Item | Ticked by default | Signs you out? | What clearing does |
+|---|---|---|---|
+| Remembered country (Chromium `Local State` `variations_*country`, Firefox `*region*` prefs) | yes | no | browser saves the country of the current IP on next start |
+| Sites allowed to see your location | yes | no | sites must ask again |
+| Location cookies (only cookies named like `country`, `geo`, `region`, `city`, `timezone`, `currency`...) | yes | no | only those cookies are deleted, one by one |
+| Cache | yes | no | pages load slower once |
+| Site storage (local storage, IndexedDB, service workers; websites only, not extensions) | no | some sites | the sites are listed |
+| All cookies | no | yes | the sites you'd be signed out of are listed |
+| History (Chromium only; Firefox keeps it with bookmarks) | no | no | visited pages and suggestions removed |
+
+Only items that can't sign you out are ticked by default. Before anything is deleted, a confirmation
+window lists every item and, in red, every site you would be signed out of (sign-in cookies such as
+`SID`, `session`, `auth`, `token`) or that would lose its saved data; only **Clear** deletes.
+
+Open browsers lock their cookies, so the app first asks to close them (nothing is deleted at that point),
+reads everything, and then shows the confirmation. A remembered country that differs from the current
+IP's country is marked red. Passwords, bookmarks and extensions are never touched. In test mode
+nothing is cleared.
+
+### VPN kill switch
+
+On the Leak check page. Works with any VPN, tunnel or proxy mode. Built on Windows Filtering Platform
+(the engine under Windows Firewall); no firewall setting is changed:
+
+- On Wi-Fi and Ethernet (adapters Windows marks as hardware), new connections are blocked **except** for
+  the VPN program(s) and the local network (private ranges, link-local, multicast, broadcast: router, DNS, DHCP).
+- Traffic through a VPN adapter, or to a local VPN proxy, never uses those adapters, so it keeps working.
+  When the VPN drops, nothing reaches the internet with the real IP. Apps that ignore a VPN's proxy
+  (like Claude Code) are blocked too.
+- Changing VPN server needs nothing (the program is allowed, not an address). Another VPN app: turn the
+  kill switch off, connect the new VPN, turn it on again; earlier programs stay allowed.
+- Connect the VPN first: turning on reads the VPN program from the live connections. Windows asks for admin
+  (the app runs itself elevated with `--kill-switch on|off`). The filters persist across reboots and use
+  fixed IDs, so **Turn off** always removes all of them. Uninstall turns it off too.
+- Emergency (no internet, app won't open), from an administrator Command Prompt:
+  `"C:\Program Files\Claude IP Guard\ClaudeIpGuard.exe" --kill-switch off`
+
+### Leak check
+
+Runs automatically the first time the page is opened, and again with **Run check**. Read-only:
+it never changes any setting. Each item is marked Leak / Warning / OK / Info.
+
+| Check | What it looks at |
+|---|---|
+| VPN routing and kill switch | Which VPN is in use (tunnel/proxy), and whether traffic could leave with the real IP (VPN drop, apps ignoring the proxy) |
+| IPv6 leak | Whether there is a public IPv6 address and whether it is in a different country than the IPv4 address |
+| DNS leak | Which DNS server answers your requests (via `o-o.myaddr.l.google.com`) and its country; EDNS client subnet |
+| Time zone | Windows time zone vs. the time zone of the IP location |
+| Windows region | Windows home location vs. the IP country |
+| Languages | Display and installed languages |
+| Windows location service | Whether GPS / Wi-Fi positioning is on |
+| IP type | Whether the IP belongs to a server or hosting company (easy to detect as VPN) |
+| System proxy | Whether a system proxy is on (apps and UDP traffic can bypass it) |
+| WebRTC | Not testable from a desktop app; reminder to test in the browser |
 
 ### Choosing countries
 
@@ -66,7 +163,7 @@ Requirements: .NET 8 SDK, Inno Setup 6.
 
 Output:
 - `publish\` – the self-contained app (no .NET install needed on the target PC)
-- `dist\ClaudeIpGuard-Setup-1.0.0.exe` – the installer (Windows 10/11 x64)
+- `dist\ClaudeIpGuard-Setup-1.1.0.exe` – the installer (Windows 10/11 x64)
 
 The installer adds a Start menu shortcut (optional desktop shortcut) and an uninstaller. Setup and
 uninstall wait until Claude IP Guard has been exited.

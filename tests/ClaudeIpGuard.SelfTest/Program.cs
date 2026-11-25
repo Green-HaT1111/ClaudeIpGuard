@@ -2,6 +2,7 @@
 //   dotnet run --project tests\ClaudeIpGuard.SelfTest [-- <folder for UI screenshots>]
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -56,17 +57,305 @@ Check(ProcessGuard.IsDesktopPath(@"C:\Program Files\WindowsApps\Claude_4.4212.0.
 Check(ProcessGuard.IsDesktopPath(@"C:\Users\x\AppData\Local\AnthropicClaude\app-1.0\claude.exe"), "classic desktop path detected");
 Check(!ProcessGuard.IsDesktopPath(@"C:\Users\x\.local\bin\claude.exe"), "CLI path is not desktop");
 Check(ProcessGuard.IsClaudeCliCommandLine(@"node C:\npm\node_modules\@anthropic-ai\claude-code\cli.js"), "npm CLI command line detected");
+Check(ProcessGuard.IsDesktopPath(@"C:\Program Files\WindowsApps\Claude_4.23118.0.0_x64__pzs8sxrjxfjjc\app\resources\cowork-svc.exe"), "desktop helper with another name detected");
+Check(ProcessGuard.IsDesktopBundledCliPath(@"C:\Users\x\AppData\Roaming\Claude\claude-code\2.1.317\a33aa5518497\claude.exe"), "desktop's bundled Claude Code detected");
+Check(!ProcessGuard.IsDesktopBundledCliPath(@"C:\Users\x\.local\bin\claude.exe"), "standalone CLI is not desktop-bundled");
+{
+    // Read-only: every claude.exe running now (user session) must be found. Nothing is killed here.
+    var found = new ProcessGuard().FindTargets(new AppSettings { KillDesktopApp = true, KillCli = true })
+        .Select(t => t.Pid).ToHashSet();
+    var running = new List<int>();
+    foreach (var p in System.Diagnostics.Process.GetProcessesByName("claude"))
+        using (p) if (p.SessionId != 0) running.Add(p.Id);
+    Check(running.All(found.Contains), $"finds all running claude.exe ({running.Count} running, {found.Count} targets)");
+    Check(!found.Contains(Environment.ProcessId), "never targets itself");
+}
+{
+    // Fake desktop install: copies of cmd.exe (as claude.exe) and ping.exe (as a helper with another
+    // name) in a folder that looks like the desktop app's. Only these fake processes are killed.
+    var fakeDir = Path.Combine(tempData, "Programs", "Claude");
+    Directory.CreateDirectory(fakeDir);
+    var fakeClaude = Path.Combine(fakeDir, "claude.exe");
+    var fakeHelper = Path.Combine(fakeDir, "helper-svc.exe");
+    File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), fakeClaude, true);
+    File.Copy(Path.Combine(Environment.SystemDirectory, "PING.EXE"), fakeHelper, true);
+
+    Process StartFake() => Process.Start(new ProcessStartInfo(fakeClaude, $"/c \"\"{fakeHelper}\" -n 60 127.0.0.1\"")
+        { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true })!;
+    List<int> FakePids()
+    {
+        var pids = new List<int>();
+        foreach (var p in Process.GetProcesses())
+            using (p)
+                try { if (p.MainModule?.FileName.StartsWith(fakeDir, StringComparison.OrdinalIgnoreCase) == true) pids.Add(p.Id); }
+                catch { }
+        return pids;
+    }
+
+    var first = StartFake();
+    Thread.Sleep(1000);
+    first.Kill(entireProcessTree: false); // leaves its helper behind with no parent
+    first.WaitForExit();
+    using var second = StartFake();
+    Thread.Sleep(1000);
+    try
+    {
+        var fake = FakePids();
+        var targets = new ProcessGuard().FindTargets(new AppSettings { KillDesktopApp = true, KillCli = false });
+        var desktopPids = targets.Where(t => t.Kind == TargetKind.Desktop).Select(t => t.Pid).ToHashSet();
+        Check(fake.Count == 3, $"fake desktop started (claude + helper, plus a helper left behind): {fake.Count} processes");
+        Check(fake.All(desktopPids.Contains), "finds every fake desktop process, incl. other-named and orphaned helpers");
+    }
+    finally
+    {
+        foreach (var pid in FakePids())
+            try { using var p = Process.GetProcessById(pid); p.Kill(true); p.WaitForExit(3000); } catch { }
+        first.Dispose();
+    }
+    Check(FakePids().Count == 0, "fake desktop processes cleaned up");
+}
+{
+    // Can this (non-admin) user stop Claude's service? Only asks Windows for the right; does not stop it.
+    var scm = OpenSCManager(null, null, 0x1 /* connect */);
+    var svc = scm == IntPtr.Zero ? IntPtr.Zero : OpenService(scm, ProcessGuard.DesktopServiceName, 0x24 /* query status + stop */);
+    int err = Marshal.GetLastWin32Error();
+    if (svc != IntPtr.Zero) Check(true, $"this user may stop {ProcessGuard.DesktopServiceName} (not stopped)");
+    else if (err == 1060) Console.WriteLine($"      skip: {ProcessGuard.DesktopServiceName} is not installed");
+    else Check(false, $"this user may stop {ProcessGuard.DesktopServiceName}: Windows error {err}");
+    if (svc != IntPtr.Zero) CloseServiceHandle(svc);
+    if (scm != IntPtr.Zero) CloseServiceHandle(scm);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern IntPtr OpenSCManager(string? machine, string? database, uint access);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern IntPtr OpenService(IntPtr scm, string name, uint access);
+    [DllImport("advapi32.dll")]
+    static extern bool CloseServiceHandle(IntPtr handle);
+}
+
+// The guard must not run as a child of Claude (it would be closed together with Claude)
+Check(SelfLaunch.IsClaude("claude.exe", @"C:\Users\x\.local\bin\claude.exe"), "self-launch: Claude Code CLI is a Claude parent");
+Check(SelfLaunch.IsClaude("Claude.exe", @"C:\Program Files\WindowsApps\Claude_4.1_x64__abc\app\Claude.exe"), "self-launch: Claude desktop is a Claude parent");
+Check(!SelfLaunch.IsClaude("explorer.exe", @"C:\Windows\explorer.exe") && !SelfLaunch.IsClaude("ClaudeIpGuard.exe", @"C:\Program Files\Claude IP Guard\ClaudeIpGuard.exe"),
+    "self-launch: Explorer and the guard itself are not");
+Console.WriteLine($"      self-launch: this self-test was started from inside Claude: {SelfLaunch.StartedByClaude()}");
+
+// VPN detection (any VPN) and the kill switch filter plan (nothing is changed here)
+{
+    Check(VpnDetector.ParseProxy("http://127.0.0.1:12334") == "127.0.0.1:12334", "vpn: proxy \"http://127.0.0.1:12334\" read");
+    Check(VpnDetector.ParseProxy("http=127.0.0.1:8080;https=127.0.0.1:8443") == "127.0.0.1:8443", "vpn: per-protocol proxy -> the https one");
+    Check(VpnDetector.ParseProxy("127.0.0.1:10808") == "127.0.0.1:10808" && VpnDetector.ParseProxy("") == null, "vpn: plain host:port read, empty ignored");
+    Check(VpnDetector.IsPublic(System.Net.IPAddress.Parse("198.51.100.10")) && !VpnDetector.IsPublic(System.Net.IPAddress.Parse("192.168.1.1")) &&
+          !VpnDetector.IsPublic(System.Net.IPAddress.Parse("10.8.0.1")) && !VpnDetector.IsPublic(System.Net.IPAddress.Parse("127.0.0.1")),
+        "vpn: public vs local addresses");
+
+    // Windows' own "hardware" flag decides what gets blocked, never adapter names.
+    var adapters = VpnDetector.Adapters();
+    var vpnLike = new System.Text.RegularExpressions.Regex("TAP|TUN|Wintun|WireGuard|OpenVPN|VPN|Wi-Fi Direct", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    Console.WriteLine($"      adapters here: {string.Join("; ", adapters.Select(a => $"{a.Name}={(a.Hardware ? "hardware" : "virtual")}"))}");
+    Check(adapters.Where(a => a.Hardware).All(a => !vpnLike.IsMatch(a.Description)), "vpn: no VPN/virtual adapter counts as hardware");
+    var vpn = VpnDetector.Detect();
+    Console.WriteLine($"      VPN here: tunnel={vpn.TunnelAdapter?.Name ?? "-"} proxy={vpn.Proxy ?? "-"} programs={string.Join(", ", vpn.Programs.Select(Path.GetFileName))} servers={vpn.Servers.Count}");
+    if (vpn.TunnelAdapter != null) Check(!vpn.TunnelAdapter.Hardware && vpn.Programs.Count > 0, "vpn: tunnel found and its VPN program identified");
+
+    // The proxy path must follow Windows' proxy setting as it is now (not a copy taken when the app started).
+    var proxyType = typeof(GeoIpService).Assembly.GetType("ClaudeIpGuard.Core.CurrentWindowsProxy")!;
+    var currentProxy = (System.Net.IWebProxy)Activator.CreateInstance(proxyType)!;
+    var winProxy = VpnDetector.WindowsProxy();
+    var used = currentProxy.GetProxy(new Uri("https://api.ipify.org"));
+    Check(winProxy == null ? used == null : used?.Authority == winProxy, $"geo: proxy path uses the current Windows proxy ({winProxy ?? "none"})");
+
+    // UDP-only VPNs (v2ray with Hysteria2/TUIC...): known cores are recognized among programs with UDP sockets.
+    Check(new[] { "xray", "v2ray", "sing-box", "HiddifyCli", "mihomo-windows-amd64", "clash-verge", "nekobox_core", "tun2socks", "hysteria2" }.All(VpnDetector.IsKnownVpnCore) &&
+          !new[] { "chrome", "svchost", "msedge", "claude", "OpenVPNConnect", "node" }.Any(VpnDetector.IsKnownVpnCore),
+        "vpn: v2ray-family cores recognized, other programs not");
+    var udp = (HashSet<int>)typeof(VpnDetector).GetMethod("UdpOwnerPids", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.Invoke(null, null)!;
+    var alive = udp.Count(pid => { try { using var p = Process.GetProcessById(pid); return true; } catch { return false; } });
+    Check(udp.Count > 0 && alive >= udp.Count * 9 / 10, $"vpn: UDP table read ({udp.Count} programs with UDP sockets, {alive} running)");
+
+    Check(KillSwitch.StructSizes() == (200, 40, 72), $"kill switch: filter structures match Windows (x64) {KillSwitch.StructSizes()}");
+    var hw = adapters.Where(a => a.Hardware).ToList();
+    var plan = KillSwitch.Plan(new[] { @"C:\VPN\vpn.exe" }, hw);
+    Check(plan.Count == 6 && plan.Count(p => !p.Permit) == 2 && plan.All(p => p.Permit ? p.Weight > 1 : p.Weight == 1),
+        "kill switch: per IP version 1 block + 2 allow filters, allows win over the block");
+    Check(plan.Where(p => !p.Permit).All(p => p.Kind == "adapters" && p.Values.SequenceEqual(hw.Select(a => a.Name))),
+        "kill switch: blocks only hardware adapters (Wi-Fi/Ethernet), never a VPN adapter");
+    Check(plan.Any(p => p.Kind == "programs" && p.Values.Contains(@"C:\VPN\vpn.exe")) &&
+          plan.Any(p => p.Kind == "lan" && !p.IPv6 && p.Values.Contains("192.168.0.0/16") && p.Values.Contains("255.255.255.255/32")),
+        "kill switch: VPN program and local network (router, DNS, DHCP) allowed");
+    Console.WriteLine($"      kill switch now: {(KillSwitch.Read().On ? "on" : "off")}");
+
+    // A firewall rule that doesn't exist must read as "none", not as an error (that error stopped "Turn on").
+    var find = typeof(KillSwitch).GetMethod("FindLegacyRule", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+    object policy = Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FwPolicy2", true)!)!;
+    object? missing = null;
+    Exception? findError = null;
+    try { missing = find.Invoke(null, new[] { policy, "Claude IP Guard test rule that does not exist" }); }
+    catch (System.Reflection.TargetInvocationException ex) { findError = ex.InnerException; }
+    Check(findError == null && missing == null, "kill switch: missing old firewall rule reads as none" + (findError != null ? ": " + findError.Message : ""));
+}
+
+// Time zone: IP location -> Windows time zone (dry run, the real time zone is not changed here)
+Check(TimeZoneSync.ToWindowsId("Europe/London") == "GMT Standard Time", "England (Europe/London) -> GMT Standard Time");
+Check(TimeZoneSync.ToWindowsId("Asia/Tehran") == "Iran Standard Time", "Iran (Asia/Tehran) -> Iran Standard Time");
+Check(TimeZoneSync.ToWindowsId("America/New_York") == "Eastern Standard Time", "New York -> Eastern Standard Time");
+Check(TimeZoneSync.ToWindowsId("Not/AZone") == null && TimeZoneSync.ToWindowsId(null) == null, "unknown time zone -> nothing");
+{
+    var tzs = new TimeZoneSync(dryRun: true);
+    var target = TimeZoneInfo.Local.Id == "Tokyo Standard Time" ? "Europe/Paris" : "Asia/Tokyo";
+    var first = tzs.Apply(target);
+    var second = tzs.Apply(target);
+    Check(first.Outcome == TzOutcome.Changed && second.Outcome == TzOutcome.AlreadySet, "time zone changed once, then left alone");
+    Check(tzs.Apply(null).Outcome == TzOutcome.Unknown, "no time zone from the IP service: nothing changed");
+}
+
+// Browser data: fake Chrome + Firefox profiles in a temp folder (real browsers are only read, never cleaned)
+{
+    var root = Path.Combine(tempData, "browsers");
+    if (Directory.Exists(root)) Directory.Delete(root, true);
+    var local = Path.Combine(root, "Local");
+    var roaming = Path.Combine(root, "Roaming");
+    void Put(string path, string text) { Directory.CreateDirectory(Path.GetDirectoryName(path)!); File.WriteAllText(path, text); }
+
+    var chrome = Path.Combine(local, @"Google\Chrome\User Data");
+    Put(Path.Combine(chrome, "Local State"),
+        """{"variations_country":"gb","variations_permanent_consistency_country":["156.0","ir"],"profile":{"info_cache":{"Default":{"name":"Person 1"}}},"keep_me":1}""");
+    var cp = Path.Combine(chrome, "Default");
+    Put(Path.Combine(cp, "Preferences"),
+        """{"profile":{"content_settings":{"exceptions":{"geolocation":{"https://maps.example,*":{"setting":1}},"cookies":{"a":1}}}},"keep_me":2}""");
+    Put(Path.Combine(cp, @"Cache\Cache_Data\f_000001"), new string('x', 5000));
+    void CookieDb(string path, bool firefox, params (string Host, string Name)[] cookies)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        using var c = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path};Pooling=False");
+        c.Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = firefox
+            ? "CREATE TABLE moz_cookies (id INTEGER PRIMARY KEY, host TEXT, name TEXT, value TEXT)"
+            : "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB)";
+        cmd.ExecuteNonQuery();
+        foreach (var (host, name) in cookies)
+        {
+            cmd.CommandText = firefox ? "INSERT INTO moz_cookies (host, name, value) VALUES ($h, $n, 'v')" : "INSERT INTO cookies (host_key, name, value) VALUES ($h, $n, 'v')";
+            cmd.Parameters.Clear();
+            cmd.Parameters.AddWithValue("$h", host);
+            cmd.Parameters.AddWithValue("$n", name);
+            cmd.ExecuteNonQuery();
+        }
+    }
+    List<string> CookieNames(string path, bool firefox)
+    {
+        using var c = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path};Pooling=False;Mode=ReadOnly");
+        c.Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = firefox ? "SELECT name FROM moz_cookies ORDER BY name" : "SELECT name FROM cookies ORDER BY name";
+        var names = new List<string>();
+        using var r = cmd.ExecuteReader();
+        while (r.Read()) names.Add(r.GetString(0));
+        return names;
+    }
+    CookieDb(Path.Combine(cp, @"Network\Cookies"), false,
+        (".booking.com", "country_code"), (".weather.example", "geo_city"), (".shop.example", "currency"),
+        (".github.com", "user_session"), (".google.com", "SID"), ("www.google.com", "__Secure-1PSID"), (".news.example", "_ga"));
+    Put(Path.Combine(cp, @"Local Storage\leveldb\000004.log"), "xx_https://web.telegram.org\0\u0001token");
+    Put(Path.Combine(cp, "History"), "history");
+    Put(Path.Combine(cp, @"Local Storage\leveldb\000003.log"), "storage");
+    Put(Path.Combine(cp, @"IndexedDB\https_site.example_0.indexeddb.leveldb\000003.log"), "site idb");
+    Put(Path.Combine(cp, @"IndexedDB\chrome-extension_abc_0.indexeddb.leveldb\000003.log"), "extension idb");
+    Put(Path.Combine(cp, "Login Data"), "passwords");
+    Put(Path.Combine(cp, "Bookmarks"), "bookmarks");
+
+    var fp = Path.Combine(roaming, @"Mozilla\Firefox\Profiles\abc.default-release");
+    Put(Path.Combine(fp, "prefs.js"), "user_pref(\"browser.search.region\", \"IR\");\r\nuser_pref(\"browser.startup.page\", 3);\r\n");
+    CookieDb(Path.Combine(fp, "cookies.sqlite"), true, (".weather.example", "loc"), (".mail.example", "sessionid"));
+    Put(Path.Combine(fp, @"storage\default\https+++site.example\ls\data.sqlite"), "site");
+    Put(Path.Combine(fp, @"storage\default\moz-extension+++abc\idb\x.sqlite"), "extension");
+    Put(Path.Combine(fp, "places.sqlite"), "bookmarks and history");
+    Put(Path.Combine(local, @"Mozilla\Firefox\Profiles\abc.default-release\cache2\entries\ABC"), new string('y', 3000));
+
+    var scanner = new BrowserDataScanner(local, roaming);
+    var found = scanner.Scan("GB");
+    BrowserDataItem? Find(string browser, BrowserDataKind kind) => found.FirstOrDefault(i => i.Browser.Name == browser && i.Kind == kind);
+    var chromeCountry = Find("Google Chrome", BrowserDataKind.CountryMemory);
+    Check(scanner.FindBrowsers().Select(b => b.Name).SequenceEqual(new[] { "Google Chrome", "Mozilla Firefox" }), "browser data: finds the fake Chrome and Firefox");
+    Check(chromeCountry is { Risk: BrowserDataRisk.Problem } && chromeCountry.Countries.SequenceEqual(new[] { "GB", "IR" }),
+        "browser data: Chrome remembers Iran while IP is UK -> problem");
+    Check(Find("Google Chrome", BrowserDataKind.LocationPermissions) is { Count: 1, Risk: BrowserDataRisk.Warning }, "browser data: 1 site allowed to see location");
+    Check(new[] { BrowserDataKind.Cache, BrowserDataKind.SiteStorage, BrowserDataKind.Cookies, BrowserDataKind.History }
+        .All(k => Find("Google Chrome", k) != null), "browser data: Chrome cache, site storage, cookies, history found");
+    Check(Find("Google Chrome", BrowserDataKind.Cache)!.ProfileName == "Person 1", "browser data: profile shown by its name");
+    Check(Find("Mozilla Firefox", BrowserDataKind.CountryMemory) is { Risk: BrowserDataRisk.Problem } &&
+          Find("Mozilla Firefox", BrowserDataKind.Cache) != null && Find("Mozilla Firefox", BrowserDataKind.Cookies) != null,
+        "browser data: Firefox region, cache, cookies found");
+    Check(scanner.Scan("IR").First(i => i.Kind == BrowserDataKind.CountryMemory && i.Browser.Name == "Mozilla Firefox").Risk == BrowserDataRisk.Info,
+        "browser data: remembered country = IP country -> not a problem");
+
+    // Location cookies only: every sign-in cookie must survive.
+    var chromeLoc = Find("Google Chrome", BrowserDataKind.LocationCookies);
+    Check(chromeLoc is { Count: 3, CanSignOut: false } && chromeLoc.Sites.SequenceEqual(new[] { "booking.com", "shop.example", "weather.example" }),
+        "browser data: 3 location cookies found (country_code, geo_city, currency)");
+    var chromeAll = Find("Google Chrome", BrowserDataKind.Cookies);
+    Check(chromeAll is { CanSignOut: true, SiteTotal: 6 } && chromeAll.Sites.SequenceEqual(new[] { "github.com", "google.com" }),
+        "browser data: all cookies -> sign-out list is exactly github.com, google.com");
+    Check(chromeAll!.OtherSites.SequenceEqual(new[] { "booking.com", "news.example", "shop.example", "weather.example" }),
+        "browser data: all cookies -> the other 4 cookie sites are listed too");
+    Check(Find("Google Chrome", BrowserDataKind.SiteStorage) is { CanSignOut: true } storageItem &&
+          storageItem.Sites.Contains("web.telegram.org") && storageItem.Sites.Contains("site.example"),
+        "browser data: site storage lists its sites (web.telegram.org, site.example)");
+    var locOnly = scanner.Clean(found.Where(i => i.Kind == BrowserDataKind.LocationCookies));
+    Check(locOnly.Cleaned == 2, "browser data: location cookies cleared in Chrome and Firefox");
+    Check(CookieNames(Path.Combine(cp, @"Network\Cookies"), false).ToHashSet().SetEquals(new[] { "SID", "_ga", "__Secure-1PSID", "user_session" }),
+        "browser data: Chrome sign-in cookies kept (SID, __Secure-1PSID, user_session)");
+    Check(CookieNames(Path.Combine(fp, "cookies.sqlite"), true).SequenceEqual(new[] { "sessionid" }), "browser data: Firefox sign-in cookie kept");
+    Check(scanner.Scan("GB").All(i => i.Kind != BrowserDataKind.LocationCookies), "browser data: no location cookies left");
+    found = scanner.Scan("GB");
+
+    var result = scanner.Clean(found);
+    Check(result.Cleaned == found.Count && result.FilesSkipped == 0, $"browser data: cleared {result.Cleaned}/{found.Count} items");
+    var state = File.ReadAllText(Path.Combine(chrome, "Local State"));
+    Check(!state.Contains("variations_country") && !state.Contains("variations_permanent") && state.Contains("keep_me"), "browser data: Chrome country removed, other settings kept");
+    var prefs = File.ReadAllText(Path.Combine(cp, "Preferences"));
+    Check(!prefs.Contains("maps.example") && prefs.Contains("\"cookies\":{\"a\":1}") && prefs.Contains("keep_me"), "browser data: location permission removed, other settings kept");
+    Check(!Directory.Exists(Path.Combine(cp, "Cache")) && !File.Exists(Path.Combine(cp, @"Network\Cookies")) && !File.Exists(Path.Combine(cp, "History")),
+        "browser data: Chrome cache, cookies, history deleted");
+    Check(File.Exists(Path.Combine(cp, "Login Data")) && File.Exists(Path.Combine(cp, "Bookmarks")) &&
+          Directory.Exists(Path.Combine(cp, @"IndexedDB\chrome-extension_abc_0.indexeddb.leveldb")) &&
+          !Directory.Exists(Path.Combine(cp, @"IndexedDB\https_site.example_0.indexeddb.leveldb")),
+        "browser data: passwords, bookmarks, extension data kept");
+    var ffPrefs = File.ReadAllText(Path.Combine(fp, "prefs.js"));
+    Check(!ffPrefs.Contains("region") && ffPrefs.Contains("browser.startup.page"), "browser data: Firefox region removed, other prefs kept");
+    Check(File.Exists(Path.Combine(fp, "places.sqlite")) && Directory.Exists(Path.Combine(fp, @"storage\default\moz-extension+++abc")) &&
+          !Directory.Exists(Path.Combine(fp, @"storage\default\https+++site.example")) && !File.Exists(Path.Combine(fp, "cookies.sqlite")),
+        "browser data: Firefox bookmarks + extension data kept, site data deleted");
+    Check(scanner.Scan("GB").Count == 0, "browser data: nothing left after clearing");
+
+    // Read-only look at this PC's real browsers.
+    var real = new BrowserDataScanner().Scan("GB");
+    foreach (var g in real.GroupBy(i => i.Browser.Name))
+        Console.WriteLine($"      real {g.Key}: " + string.Join(", ", g.GroupBy(i => i.Kind).Select(k =>
+            k.Key + (k.Key == BrowserDataKind.CountryMemory ? "=" + string.Join("/", k.SelectMany(i => i.Countries)) : $" {k.Sum(i => i.Bytes) / 1048576} MB"))));
+}
 
 // 3. Live IP lookup
 using (var geo = new GeoIpService())
 {
     try
     {
-        var r = await geo.LocateAsync(CancellationToken.None);
+        var r = await geo.LocateAsync(false, CancellationToken.None);
         Console.WriteLine($"      live result: {r.Ip} -> {r.CountryName} ({r.CountryCode}), {r.City}, via {r.Provider}");
         Check(r.CountryCode.Length == 2, "live IP + country lookup");
+        // Direct path: IP and country both without any proxy (the case that failed after switching v2ray -> OpenVPN).
+        using (var geoDirect = new GeoIpService())
+        {
+            var d = await geoDirect.LocateAsync(true, CancellationToken.None);
+            Console.WriteLine($"      direct path: {d.Ip} -> {d.CountryName} ({d.CountryCode}) via {d.Provider}");
+            Check(d.CountryCode.Length == 2, "live direct-path IP + country lookup (no proxy at all)");
+        }
+        var liveTz = TimeZoneSync.ToWindowsId(r.TimeZone);
+        Console.WriteLine($"      live time zone: {r.TimeZone ?? "(none)"} -> {liveTz ?? "(none)"}; Windows now: {TimeZoneInfo.Local.Id}");
+        Check(liveTz != null, "live lookup gives a time zone Windows knows");
         var sw = Stopwatch.StartNew();
-        await geo.LocateAsync(CancellationToken.None);
+        await geo.LocateAsync(false, CancellationToken.None);
         Console.WriteLine($"      second (cached country) lookup took {sw.ElapsedMilliseconds} ms");
     }
     catch (Exception ex)
@@ -91,7 +380,7 @@ KillNotepads();
 // The user's example: only UK, USA, Canada and Germany are allowed.
 var settings = new AppSettings { AllowedCountries = new() { "GB", "US", "CA", "DE" } };
 var locator = new SimulatedLocator("FR", false);
-var engine = new GuardEngine(() => settings, locator, new ProcessGuard(new[] { "notepad" }));
+var engine = new GuardEngine(() => settings, locator, new ProcessGuard(new[] { "notepad" }), new TimeZoneSync(dryRun: true));
 var log = new List<string>();
 engine.Activity += e => log.Add(Loc.Instance.Format(e.Key, e.Args));
 
@@ -130,6 +419,23 @@ Check(await NotepadAliveAfter(engine, 2500), "paused: target left running");
 engine.Resume();
 Check(!await NotepadAliveAfter(engine, 2500), "resumed: target closed");
 Check(engine.KillCount >= 4, $"kill counter = {engine.KillCount}");
+Check(log.Any(l => l.StartsWith("Time zone set") && l.Contains("Paris") && l.Contains("France")), "engine: France IP -> Paris time zone");
+Check(log.Any(l => l.StartsWith("Time zone set") && l.Contains("Eastern Time")), "engine: USA IP -> US Eastern time zone");
+Check(log.Any(l => l.StartsWith("Time zone set") && l.Contains("Berlin")), "engine: Germany IP -> Berlin time zone");
+
+// Proxy mode: desktop app through the proxy (Germany, allowed), Claude Code goes out directly (Iran, not allowed).
+locator.Fail = false;
+locator.Country = "DE";
+locator.DirectCountry = "IR";
+engine.CheckNow();
+await Task.Delay(1500);
+Check(!engine.BlockDesktop && engine.BlockCli && engine.State == GuardState.Blocked,
+    "proxy mode: desktop app allowed (proxy in Germany), Claude Code blocked (direct from Iran)");
+Check(log.Any(l => l.StartsWith("Claude Code ignores the proxy") && l.Contains("Iran")), "proxy mode: Claude Code's direct path logged");
+locator.DirectCountry = null;
+engine.CheckNow();
+await Task.Delay(1500);
+Check(!engine.ShouldBlock && !engine.CliPathDiffers, "no proxy: one path again, allowed");
 engine.Dispose();
 KillNotepads();
 Console.WriteLine("      activity log:");
@@ -145,6 +451,9 @@ if (shotDir != null)
         {
             var app = new ClaudeIpGuard.App();
             app.InitializeComponent();
+            // Like the real app: code after "await" comes back to the UI thread.
+            SynchronizationContext.SetSynchronizationContext(
+                new System.Windows.Threading.DispatcherSynchronizationContext(System.Windows.Threading.Dispatcher.CurrentDispatcher));
             var uiSettings = new AppSettings { AllowedCountries = new() { "GB", "US", "CA", "DE" } };
             var host = new FakeHost(uiSettings);
             var uiEngine = new GuardEngine(() => uiSettings, new SimulatedLocator("DE", false), new ProcessGuard(new[] { "no-such-process" }));
@@ -172,6 +481,35 @@ if (shotDir != null)
             win.NavActivity.IsChecked = true;
             Pump(300);
             Save(win, Path.Combine(shotDir, "activity-en.png"));
+            win.NavPrivacy.IsChecked = true;   // starts the leak check automatically
+            var waitUntil = DateTime.Now.AddSeconds(40);
+            Pump(500);
+            while (!vm.Privacy.CanRun && DateTime.Now < waitUntil) Pump(300);
+            Pump(300);
+            Console.WriteLine($"      leak check: {vm.Privacy.Summary}");
+            foreach (var item in vm.Privacy.Items) Console.WriteLine($"        [{item.StatusText}] {item.Title}: {item.Detail}");
+            if (vm.Privacy.Items.Count < 8) throw new Exception($"leak check returned only {vm.Privacy.Items.Count} items");
+            Save(win, Path.Combine(shotDir, "privacy-en.png"));
+            Loc.Instance.Language = "fa";
+            Pump(400);
+            Save(win, Path.Combine(shotDir, "privacy-fa.png"));
+            Loc.Instance.Language = "en";
+            // Browser data page (reads this PC's real browsers; nothing is cleared)
+            win.NavBrowser.IsChecked = true;
+            Pump(500);
+            waitUntil = DateTime.Now.AddSeconds(40);
+            while ((!vm.BrowserData.CanAct || !vm.BrowserData.HasRun) && DateTime.Now < waitUntil) Pump(300);
+            Pump(500);
+            Console.WriteLine($"      browser data: {vm.BrowserData.Summary}");
+            Console.WriteLine($"      banner: {vm.BrowserData.BannerText}");
+            Save(win, Path.Combine(shotDir, "browser-en.png"));
+            Loc.Instance.Language = "fa";
+            Pump(400);
+            Save(win, Path.Combine(shotDir, "browser-fa.png"));
+            Loc.Instance.Language = "en";
+            win.NavDashboard.IsChecked = true;
+            Pump(400);
+            Save(win, Path.Combine(shotDir, "dashboard-banner-en.png"));
             Loc.Instance.Language = "fa";
             win.NavDashboard.IsChecked = true;
             uiEngine.Pause();

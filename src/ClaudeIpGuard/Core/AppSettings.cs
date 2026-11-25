@@ -12,6 +12,8 @@ public sealed class AppSettings
     public bool FailSafeBlock { get; set; } = true;
     public bool KillDesktopApp { get; set; } = true;
     public bool KillCli { get; set; } = true;
+    /// <summary>Set the Windows time zone to the one of the public IP's location.</summary>
+    public bool SyncTimeZone { get; set; } = true;
     public List<string> AllowedCountries { get; set; } = new(EuropeCountries.Default);
     public string Language { get; set; } = "en";
 
