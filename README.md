@@ -4,6 +4,15 @@ A Windows 10/11 tray app that checks your public IP address and closes **Claude*
 Claude Code CLI) when the IP is not in an allowed country. By default the allowed list is every
 European country.
 
+## Download
+
+Download **ClaudeIpGuard-Setup-x.y.z.exe** from the
+[latest release](https://github.com/Green-HaT1111/ClaudeIpGuard/releases/latest) and run it.
+It runs on Windows 10 and 11 (64-bit), and .NET is included, so you don't need to install anything else.
+
+The installer isn't code-signed, so Windows SmartScreen may warn about an unknown publisher. Click
+**More info → Run anyway**.
+
 ## How it works
 
 - Checks your public IP every 30 seconds (configurable, 10–3600 s), and again right after any network
