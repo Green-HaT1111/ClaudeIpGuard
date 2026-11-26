@@ -59,7 +59,9 @@ Check(!ProcessGuard.IsDesktopPath(@"C:\Users\x\.local\bin\claude.exe"), "CLI pat
 Check(ProcessGuard.IsClaudeCliCommandLine(@"node C:\npm\node_modules\@anthropic-ai\claude-code\cli.js"), "npm CLI command line detected");
 Check(ProcessGuard.IsDesktopPath(@"C:\Program Files\WindowsApps\Claude_4.23118.0.0_x64__pzs8sxrjxfjjc\app\resources\cowork-svc.exe"), "desktop helper with another name detected");
 Check(ProcessGuard.IsDesktopBundledCliPath(@"C:\Users\x\AppData\Roaming\Claude\claude-code\2.1.317\a33aa5518497\claude.exe"), "desktop's bundled Claude Code detected");
+Check(ProcessGuard.IsDesktopBundledCliPath(@"C:\Users\x\AppData\Local\Claude-Data\claude_pzs8sxrjxfjjc\claude-code\2.1.330\9424831ad51c\claude.exe"), "desktop's bundled Claude Code (new folder) detected");
 Check(!ProcessGuard.IsDesktopBundledCliPath(@"C:\Users\x\.local\bin\claude.exe"), "standalone CLI is not desktop-bundled");
+Check(!ProcessGuard.IsDesktopBundledCliPath(@"C:\Users\x\.vscode\extensions\anthropic.claude-code-2.1.332-win32-x64\resources\native-binary\claude.exe"), "VS Code extension's Claude Code is not desktop-bundled");
 {
     // Read-only: every claude.exe running now (user session) must be found. Nothing is killed here.
     var found = new ProcessGuard().FindTargets(new AppSettings { KillDesktopApp = true, KillCli = true })

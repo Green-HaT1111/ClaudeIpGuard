@@ -47,8 +47,8 @@ What gets closed:
 
 | Setting | Processes |
 |---|---|
-| Claude desktop app | every process running from the desktop app's folder, whatever its name (Microsoft Store package `WindowsApps\Claude_*`, or `%LocalAppData%\AnthropicClaude`), the Claude Code copy it downloads to `%AppData%\Claude\`, and its background service `CoworkVMService` |
-| Claude Code CLI | any other `claude.exe` (native installer), and `node.exe` running `@anthropic-ai/claude-code` (npm install) |
+| Claude desktop app | every process running from the desktop app's folder, whatever its name (Microsoft Store package `WindowsApps\Claude_*`, or `%LocalAppData%\AnthropicClaude`), the Claude Code copy it downloads to `%AppData%\Claude\` (newer versions `%LocalAppData%\Claude-Data\`), and its background service `CoworkVMService` |
+| Claude Code CLI | any other `claude.exe` (native installer, the VS Code extension), and `node.exe` running `@anthropic-ai/claude-code` (npm install) |
 
 The installer gives normal users permission to stop `CoworkVMService` if they don't have it already,
 so the guard doesn't need admin rights for it. Uninstall removes that permission again.
@@ -163,7 +163,7 @@ Requirements: .NET 8 SDK, Inno Setup 6.
 
 Output:
 - `publish\` – the self-contained app (no .NET install needed on the target PC)
-- `dist\ClaudeIpGuard-Setup-1.1.0.exe` – the installer (Windows 10/11 x64)
+- `dist\ClaudeIpGuard-Setup-1.1.1.exe` – the installer (Windows 10/11 x64)
 
 The installer adds a Start menu shortcut (optional desktop shortcut) and an uninstaller. Setup and
 uninstall wait until Claude IP Guard has been exited.

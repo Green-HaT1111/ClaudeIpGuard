@@ -149,9 +149,11 @@ public sealed class ProcessGuard
         path.Contains(@"\AnthropicClaude\", StringComparison.OrdinalIgnoreCase) ||      // classic installer
         path.Contains(@"\Programs\Claude\", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>The Claude Code copy that the desktop app downloads and runs (%AppData%\Claude\claude-code\...).</summary>
+    /// <summary>The Claude Code copy that the desktop app downloads and runs (%AppData%\Claude\claude-code\...,
+    /// newer versions %LocalAppData%\Claude-Data\claude_...\claude-code\...).</summary>
     public static bool IsDesktopBundledCliPath(string path) =>
-        path.Contains(@"\AppData\Roaming\Claude\", StringComparison.OrdinalIgnoreCase);
+        path.Contains(@"\AppData\Roaming\Claude\", StringComparison.OrdinalIgnoreCase) ||
+        path.Contains(@"\AppData\Local\Claude-Data\", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// The desktop app's background Windows service (Cowork VM). Only an admin may stop a service,
